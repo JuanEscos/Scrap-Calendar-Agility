@@ -91,9 +91,9 @@ jobs:
         if: always()
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ agilitydivertidog.com }}
-          username: ${{ Admin }}
-          password: ${{ Divertidog01 }}
+          host: ${{  }}
+          username: ${{  }}
+          password: ${{  }}
           port: ${{ secrets.SSH_PORT || 22 }}
           script: |
             D=$(date +%F)
