@@ -2,15 +2,18 @@ name: Calendario RSCE diario
 
 on:
   schedule:
-    # 04:05 UTC ≈ 06:05 en Europa/Madrid (verano). Ajusta si quieres otra hora.
+    # 04:05 UTC ≈ 06:05 en Europa/Madrid (horario de verano).
     - cron: '5 4 * * *'
   workflow_dispatch:
 
 jobs:
   run-and-deploy:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     env:
       TZ: Europe/Madrid
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -30,13 +33,20 @@ jobs:
           ls -l
           test -f "eventos_agility_2025.csv"
 
-      # OPCIÓN A: subir por SCP con clave SSH (recomendada)
+      - name: Calcular hash local del CSV
+        id: hash
+        run: |
+          LOCAL_HASH=$(sha256sum eventos_agility_2025.csv | awk '{print $1}')
+          echo "LOCAL_HASH=$LOCAL_HASH" >> "$GITHUB_OUTPUT"
+          echo "➡ Hash local: $LOCAL_HASH"
+
       - name: Crear carpeta remota (por si no existe)
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ agilitydivertidog.com }}
-          username: ${{ Admin }}
-          key: ${{ Divertidog01 }}
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          password: ${{ secrets.SSH_PASSWORD }}
           port: ${{ secrets.SSH_PORT || 22 }}
           script: |
             mkdir -p /home/agilitydivertidog/www/NewWeb/Privado/Calendar
@@ -47,17 +57,47 @@ jobs:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
+          password: ${{ secrets.SSH_PASSWORD }}
           port: ${{ secrets.SSH_PORT || 22 }}
           source: "eventos_agility_2025.csv"
           target: "/home/agilitydivertidog/www/NewWeb/Privado/Calendar/"
           overwrite: true
 
-      - name: Ajustar permisos (opcional)
+      - name: Verificar en servidor (existe, tamaño, líneas y hash)
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
-          password: ${{ secrets.SSH_KEY }}
+          key: ${{ secrets.SSH_KEY }}
+          password: ${{ secrets.SSH_PASSWORD }}
           port: ${{ secrets.SSH_PORT || 22 }}
           script: |
-            chmod 644 /home/agilitydivertidog/www/NewWeb/Privado/Calendar/eventos_agility_2025.csv
+            FILE="/home/agilitydivertidog/www/NewWeb/Privado/Calendar/eventos_agility_2025.csv"
+            test -f "$FILE"
+            ls -lh "$FILE"
+            echo "➡ Cabecera:"
+            head -n 2 "$FILE" || true
+            echo "➡ Nº de líneas:"
+            wc -l "$FILE" || true
+            REMOTE_HASH=$(sha256sum "$FILE" | awk '{print $1}')
+            echo "➡ Hash remoto: $REMOTE_HASH"
+            if [ "$REMOTE_HASH" != "${{ steps.hash.outputs.LOCAL_HASH }}" ]; then
+              echo "ERROR: El hash remoto no coincide con el local"; exit 1
+            fi
+            chmod 644 "$FILE"
+
+      # (Opcional) Guardar una copia histórica con fecha AAAA-MM-DD
+      - name: Archivar copia con fecha (opcional)
+        if: always()
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ agilitydivertidog.com }}
+          username: ${{ Admin }}
+          key: ${{ secrets.SSH_KEY }}
+          password: ${{ Divertidog01 }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          script: |
+            D=$(date +%F)
+            SRC="/home/agilitydivertidog/www/NewWeb/Privado/Calendar/eventos_agility_2025.csv"
+            DST="/home/agilitydivertidog/www/NewWeb/Privado/Calendar/eventos_agility_2025_${D}.csv"
+            cp -f "$SRC" "$DST" || true
