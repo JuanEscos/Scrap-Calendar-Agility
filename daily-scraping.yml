@@ -1,0 +1,31 @@
+name: Daily Agility Scraper
+
+on:
+  schedule:
+    # Se ejecuta todos los días a las 02:00 UTC (04:00 AM CEST en verano)
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    # Permite ejecutarlo manualmente desde GitHub
+
+jobs:
+  run_scraper:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -yq chromium-browser
+          pip install --upgrade pip
+          pip install selenium beautifulsoup4 webdriver-manager folium geopy
+
+      - name: Run Python Script
+        run: |
+          python3 -c "import sys; sys.path.insert(0, '.'); import your_script_name; your_script_name.main()"
