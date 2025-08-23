@@ -87,16 +87,18 @@ jobs:
             chmod 644 "$FILE"
 
       # (Opcional) Guardar una copia histórica con fecha AAAA-MM-DD
-      - name: Archivar copia con fecha (opcional)
-        if: always()
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{  }}
-          username: ${{  }}
-          password: ${{  }}
-          port: ${{ secrets.SSH_PORT || 22 }}
-          script: |
-            D=$(date +%F)
-            SRC="/home/agilitydivertidog/www/NewWeb/Privado/Calendar/eventos_agility_2025.csv"
-            DST="/home/agilitydivertidog/www/NewWeb/Privado/Calendar/eventos_agility_2025_${D}.csv"
-            cp -f "$SRC" "$DST" || true
+     - name: Archivar copia con fecha (opcional)
+  if: always()
+  uses: appleboy/ssh-action@v1.0.3
+  with:
+    host: ${{ secrets.SSH_HOST }}
+    username: ${{ secrets.SSH_USER }}
+    password: ${{ secrets.SSH_PASSWORD }}
+    port: ${{ secrets.SSH_PORT }}
+    script: |
+      set -euo pipefail
+      DIR="/home/agilitydivertidog/www/NewWeb/Privado/Calendar"
+      FILE="$DIR/eventos_agility_2025.csv"
+      test -s "$FILE"  # existe y no está vacío
+      D=$(date +%F)
+      cp -f "$FILE" "$DIR/eventos_agility_2025_${D}.csv"
