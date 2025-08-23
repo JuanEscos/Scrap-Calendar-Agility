@@ -1,0 +1,63 @@
+name: Calendario RSCE diario
+
+on:
+  schedule:
+    # 04:05 UTC ≈ 06:05 en Europa/Madrid (verano). Ajusta si quieres otra hora.
+    - cron: '5 4 * * *'
+  workflow_dispatch:
+
+jobs:
+  run-and-deploy:
+    runs-on: ubuntu-latest
+    env:
+      TZ: Europe/Madrid
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias (si existen)
+        run: |
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Ejecutar script que genera el CSV
+        run: |
+          python "./Calendario RSCE 25.08.22.py"
+          ls -l
+          test -f "eventos_agility_2025.csv"
+
+      # OPCIÓN A: subir por SCP con clave SSH (recomendada)
+      - name: Crear carpeta remota (por si no existe)
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          script: |
+            mkdir -p /home/agilitydivertidog/www/NewWeb/Privado/Calendar
+
+      - name: Copiar CSV al servidor
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          source: "eventos_agility_2025.csv"
+          target: "/home/agilitydivertidog/www/NewWeb/Privado/Calendar/"
+          overwrite: true
+
+      - name: Ajustar permisos (opcional)
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          script: |
+            chmod 644 /home/agilitydivertidog/www/NewWeb/Privado/Calendar/eventos_agility_2025.csv
