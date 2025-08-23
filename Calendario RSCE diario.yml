@@ -34,9 +34,9 @@ jobs:
       - name: Crear carpeta remota (por si no existe)
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_KEY }}
+          host: ${{ agilitydivertidog.com }}
+          username: ${{ Admin }}
+          key: ${{ Divertidog01 }}
           port: ${{ secrets.SSH_PORT || 22 }}
           script: |
             mkdir -p /home/agilitydivertidog/www/NewWeb/Privado/Calendar
