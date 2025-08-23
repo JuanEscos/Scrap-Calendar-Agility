@@ -1,0 +1,16 @@
+- name: Hash local
+  id: hash
+  run: echo "LOCAL_HASH=$(sha256sum eventos_agility_2025.csv | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+
+- name: Verificar copia en servidor
+  uses: appleboy/ssh-action@v1.0.3
+  with:
+    host: ${{ secrets.SSH_HOST }}
+    username: ${{ secrets.SSH_USER }}
+    password: ${{ secrets.SSH_PASSWORD }}
+    script: |
+      FILE="/home/agilitydivertidog/www/NewWeb/Privado/Calendar/eventos_agility_2025.csv"
+      test -s "$FILE"
+      REMOTE_HASH=$(sha256sum "$FILE" | awk '{print $1}')
+      echo "Remote hash: $REMOTE_HASH"
+      [ "$REMOTE_HASH" = "${{ steps.hash.outputs.LOCAL_HASH }}" ] || { echo "Hash distinto"; exit 1; }
