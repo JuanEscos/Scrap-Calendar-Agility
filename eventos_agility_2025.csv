@@ -1,57 +1,75 @@
-Nombre,Inicio,Fin,URL,Ciudad,Lat,Lon
-C.A. L’Almozara Can Bosc – Prueba de Agility,"22 agosto, 2025","24 agosto, 2025",https://www.rsce.es/eventos/c-a-lalmozara-can-bosc-prueba-de-agility-2/,Barcelona,41.3825802,2.177073
-C.A. Pawer – Prueba de Agility,"22 agosto, 2025","24 agosto, 2025",https://www.rsce.es/eventos/c-a-pawer-prueba-de-agility-3/,Cantabria,43.1595664,-4.0878382
-C.A. Pawer – Prueba de Agility,"29 agosto, 2025","31 agosto, 2025",https://www.rsce.es/eventos/c-a-pawer-prueba-de-agility-4/,Cantabria,43.1595664,-4.0878382
-C.A. Valles Club Cani – Prueba de Agility,"30 agosto, 2025","31 agosto, 2025",https://www.rsce.es/eventos/c-a-valles-club-cani-prueba-de-agility-3/,Barcelona,41.3825802,2.177073
-C.A. Badalona – Prueba de Agility,"5 septiembre, 2025","6 septiembre, 2025",https://www.rsce.es/eventos/c-a-badalona-prueba-de-agility-4/,Barcelona,41.3825802,2.177073
-C.A. El Area Jerez – Prueba de Agility,"5 septiembre, 2025","7 septiembre, 2025",https://www.rsce.es/eventos/c-a-el-area-jerez-prueba-de-agility-3/,Cádiz,36.5297438,-6.2928976
-C.A. Amics del Gos de Ondara – Prueba de Agility,"5 septiembre, 2025","7 septiembre, 2025",https://www.rsce.es/eventos/c-a-amics-del-gos-de-ondara-prueba-de-agility-4/,Ondara (Alicante),38.8277759,0.0170054
-C.A. Tercans – Prueba de Agility,"6 septiembre, 2025","7 septiembre, 2025",https://www.rsce.es/eventos/c-a-tercans-prueba-de-agility-6/,Pontevedra,42.4318876,-8.6431592
-C.A. Cantabria – Prueba de Agility,"6 septiembre, 2025","7 septiembre, 2025",https://www.rsce.es/eventos/c-a-cantabria-prueba-de-agility-2/,Cantabria,43.1595664,-4.0878382
-C.A. Indog Maria de Huerva – Prueba de Agility,"6 septiembre, 2025","7 septiembre, 2025",https://www.rsce.es/eventos/c-a-indog-maria-de-huerva-prueba-de-agility/,Zaragoza,41.6521342,-0.8809428
-C.A. Thunderdogs Galicia – Prueba de Agility,"13 septiembre, 2025","14 septiembre, 2025",https://www.rsce.es/eventos/c-a-thunderdogs-galicia-prueba-de-agility-4/,Pontevedra,42.4318876,-8.6431592
-C.A. Divertidog Sonrisas y Huellas – Prueba de Agility,"13 septiembre, 2025","14 septiembre, 2025",https://www.rsce.es/eventos/c-a-divertidog-sonrisas-y-huellas-prueba-de-agility-3/,Zaragoza,41.6521342,-0.8809428
-C.A. AA y Cia – Prueba de Agility,"13 septiembre, 2025","14 septiembre, 2025",https://www.rsce.es/eventos/c-a-aa-y-cia-prueba-de-agility/,Madrid,40.4167047,-3.7035825
-C.A. Maresme – Prueba de Agility,"13 septiembre, 2025","14 septiembre, 2025",https://www.rsce.es/eventos/c-a-maresme-prueba-de-agility-5/,Barcelona,41.3825802,2.177073
-C.A. Valle de Güimar – Prueba de Agility,"13 septiembre, 2025","14 septiembre, 2025",https://www.rsce.es/eventos/c-a-valle-de-guimar-prueba-de-agility-3/,Tenerife,28.2935785,-16.6214471
-C.A. Xanastur – Prueba de Agility,"26 septiembre, 2025","28 septiembre, 2025",https://www.rsce.es/eventos/c-a-xanastur-prueba-de-agility-6/,Oviedo,43.3618625,-5.8483581
-C.A. Colors – Prueba de Agility,"27 septiembre, 2025","28 septiembre, 2025",https://www.rsce.es/eventos/c-a-colors-prueba-de-agility-2/,Madrid,40.4167047,-3.7035825
-C.A. Somnium – Prueba de Agility,"27 septiembre, 2025","28 septiembre, 2025",https://www.rsce.es/eventos/c-a-somnium-prueba-de-agility-3/,Castellón,40.2518568,-0.0615052
-C.A. Ourencan – Prueba de Agility,"27 septiembre, 2025","28 septiembre, 2025",https://www.rsce.es/eventos/c-a-ourencan-prueba-de-agility-2/,Orense,42.1939629,-7.537124
-C.A. Ciudad de Algeciras – Prueba de Agility,"4 octubre, 2025","5 octubre, 2025",https://www.rsce.es/eventos/c-a-ciudad-de-algeciras-prueba-de-agility-3/,Cádiz,36.5297438,-6.2928976
-C.A. Canlosal – Prueba de Agility,"4 octubre, 2025","5 octubre, 2025",https://www.rsce.es/eventos/c-a-canlosal-prueba-de-agility/,Las Palmas,27.9580004,-15.6062305
-C.A. Villena – Prueba de Agility,"4 octubre, 2025","5 octubre, 2025",https://www.rsce.es/eventos/c-a-villena-prueba-de-agility-3/,Alicante,38.3436365,-0.4881708
-C.A. Tandem – Prueba de Agility,"4 octubre, 2025","5 octubre, 2025",https://www.rsce.es/eventos/c-a-tandem-prueba-de-agility/,Madrid,40.4167047,-3.7035825
-C.A. Divertidog Sonrisas y Huellas – Prueba de Agility,"4 octubre, 2025","5 octubre, 2025",https://www.rsce.es/eventos/c-a-divertidog-sonrisas-y-huellas-prueba-de-agility-6/,Zaragoza,41.6521342,-0.8809428
-C.A. L’Horta Nord – Prueba de Agility,"9 octubre, 2025","12 octubre, 2025",https://www.rsce.es/eventos/c-a-lhorta-nord-prueba-de-agility/,Valencia,39.4697065,-0.3763353
-C.A. Mancur’s – Prueba de Agility,"11 octubre, 2025","12 octubre, 2025",https://www.rsce.es/eventos/c-a-mancurs-prueba-de-agility-2/,Toledo,39.8560679,-4.0239568
-C.A. Valles Club Cani – Prueba de Agility,"11 octubre, 2025","12 octubre, 2025",https://www.rsce.es/eventos/c-a-valles-club-cani-prueba-de-agility-4/,Barcelona,41.3825802,2.177073
-C.A. Depordog – Prueba de Agility,"11 octubre, 2025","13 octubre, 2025",https://www.rsce.es/eventos/c-a-depordog-prueba-de-agility-2/,Cádiz,36.5297438,-6.2928976
-Copa en España de Agility de la RSCE para la raza Perro de Pastor Belga,"12 octubre, 2025",,https://www.rsce.es/eventos/copa-en-espana-de-agility-de-la-rsce-para-la-raza-perro-de-pastor-belga-2/,Algeciras (Cádiz),36.1311725,-5.4473991
-C.A. Amics del Gos de Ondara – Prueba de Agility,"17 octubre, 2025","19 octubre, 2025",https://www.rsce.es/eventos/c-a-amics-del-gos-de-ondara-prueba-de-agility-5/,Ondara (Alicante),38.8277759,0.0170054
-C.A. Tercans – Prueba de Agility,"18 octubre, 2025","19 octubre, 2025",https://www.rsce.es/eventos/c-a-tercans-prueba-de-agility-7/,Pontevedra,42.4318876,-8.6431592
-C.A. Tinerfe – Prueba de Agility,"18 octubre, 2025","19 octubre, 2025",https://www.rsce.es/eventos/c-a-tinerfe-prueba-de-agility-2/,Tenerife,28.2935785,-16.6214471
-C.A. La Princesa – Prueba de Agility,"18 octubre, 2025","19 octubre, 2025",https://www.rsce.es/eventos/c-a-la-princesa-prueba-de-agility/,Madrid,40.4167047,-3.7035825
-C.A. Ciutat de Valencia – Prueba de Agility,"18 octubre, 2025","19 octubre, 2025",https://www.rsce.es/eventos/c-a-ciutat-de-valencia-prueba-de-agility/,Valencia,39.4697065,-0.3763353
-C.A. Les Fonts – Prueba de Agility,"18 octubre, 2025","19 octubre, 2025",https://www.rsce.es/eventos/c-a-les-fonts-prueba-de-agility-3/,Barcelona,41.3825802,2.177073
-C.A. Zarajump – Prueba de Agility,"18 octubre, 2025","19 octubre, 2025",https://www.rsce.es/eventos/c-a-zarajump-prueba-de-agility-4/,Gotor (Zaragoza),41.5459291,-1.6499755
-Copa en España de Agility de la RSCE para las razas españolas,"18 octubre, 2025",,https://www.rsce.es/eventos/copa-en-espana-de-agility-de-la-rsce-para-las-razas-espanolas/,Ondara (Alicante),38.8277759,0.0170054
-Copa en España de Agility de la RSCE para la raza Cocker Spaniel,"19 octubre, 2025",,https://www.rsce.es/eventos/copa-en-espana-de-agility-de-la-rsce-para-la-raza-cocker-spaniel-2/,Ondara (Alicante),38.8277759,0.0170054
-C.A. The Paws By Patas – Prueba de Agility,"25 octubre, 2025","26 octubre, 2025",https://www.rsce.es/eventos/c-a-the-paws-by-patas-prueba-de-agility-2/,Pontevedra,42.4318876,-8.6431592
-C.A. Costa Blanca – Prueba de Agility,"25 octubre, 2025","26 octubre, 2025",https://www.rsce.es/eventos/c-a-costa-blanca-prueba-de-agility-2/,Alicante,38.3436365,-0.4881708
-C.A. Mikan – Prueba de Agility,"25 octubre, 2025","26 octubre, 2025",https://www.rsce.es/eventos/c-a-mikan-prueba-de-agility-3/,Madrid,40.4167047,-3.7035825
-C.A. Pawer – Prueba de Agility,"25 octubre, 2025","26 octubre, 2025",https://www.rsce.es/eventos/c-a-pawer-prueba-de-agility-5/,Cantabria,43.1595664,-4.0878382
-C.A. Dogit – Prueba de Agility,"31 octubre, 2025","2 noviembre, 2025",https://www.rsce.es/eventos/c-a-dogit-prueba-de-agility-3/,Granada,37.1734995,-3.5995337
-C.A. L’Almozara Can Bosc – Prueba de Agility,"1 noviembre, 2025","2 noviembre, 2025",https://www.rsce.es/eventos/c-a-lalmozara-can-bosc-prueba-de-agility-3/,Barcelona,41.3825802,2.177073
-C.A. Almussafes – Prueba de Agility,"8 noviembre, 2025","9 noviembre, 2025",https://www.rsce.es/eventos/c-a-almussafes-prueba-de-agility/,Valencia,39.4697065,-0.3763353
-C.A. Do It – Prueba de Agility,"8 noviembre, 2025","9 noviembre, 2025",https://www.rsce.es/eventos/c-a-do-it-prueba-de-agility/,Madrid,40.4167047,-3.7035825
-C.A. Sa Roca – Prueba de Agility,"8 noviembre, 2025","9 noviembre, 2025",https://www.rsce.es/eventos/c-a-sa-roca-prueba-de-agility/,Zaragoza,41.6521342,-0.8809428
-C.A. Valle de Güimar – Prueba de Agility,"8 noviembre, 2025","9 noviembre, 2025",https://www.rsce.es/eventos/c-a-valle-de-guimar-prueba-de-agility-4/,Tenerife,28.2935785,-16.6214471
-Copa en España de Agility de la RSCE para la raza Perro de Agua Español,"15 noviembre, 2025",,https://www.rsce.es/eventos/copa-en-espana-de-agility-de-la-rsce-para-la-raza-perro-de-agua-espanol-2/,Paterna de Rivera (Cádiz),36.5229634,-5.864702
-C.A. Implican – Prueba de Agility,"21 noviembre, 2025","23 noviembre, 2025",https://www.rsce.es/eventos/c-a-implican-prueba-de-agility-3/,Yunquera de Henares (Guadalajara),40.7546981,-3.1662667
-C.A. Tercans – Prueba de Agility,"22 noviembre, 2025","23 noviembre, 2025",https://www.rsce.es/eventos/c-a-tercans-prueba-de-agility-8/,Pontevedra,42.4318876,-8.6431592
-C.A. Sigue Hop Gran Canaria – Prueba de Agility,"22 noviembre, 2025","23 noviembre, 2025",https://www.rsce.es/eventos/c-a-sigue-hop-gran-canaria-prueba-de-agility-3/,Las Palmas de Gran Canaria,28.1288694,-15.4349015
-C.A. Pawer – Prueba de Agility,"22 noviembre, 2025","23 noviembre, 2025",https://www.rsce.es/eventos/c-a-pawer-prueba-de-agility-6/,Cantabria,43.1595664,-4.0878382
-C.A. Villena – Prueba de Agility,"22 noviembre, 2025","23 noviembre, 2025",https://www.rsce.es/eventos/c-a-villena-prueba-de-agility-5/,Alicante,38.3436365,-0.4881708
-C.A. Thunderdogs Galicia – Prueba de Agility,"28 noviembre, 2025","29 noviembre, 2025",https://www.rsce.es/eventos/c-a-thunderdogs-galicia-prueba-de-agility-6/,Pontevedra,42.4318876,-8.6431592
-C.A. Agilcan – Prueba de Agility,"29 noviembre, 2025","30 noviembre, 2025",https://www.rsce.es/eventos/c-a-agilcan-prueba-de-agility-2/,Madrid,40.4167047,-3.7035825
+Nombre,Fecha inicio,Fecha fin,URL,Ciudad,Estado,Latitud,Longitud
+C.A. Pawer – Prueba de Agility,"29 agosto, 2025","31 agosto, 2025",https://www.rsce.es/eventos/c-a-pawer-prueba-de-agility-4/,Cantabria,Activo,43.1595664,-4.0878382
+C.A. Valles Club Cani – Prueba de Agility,"30 agosto, 2025","31 agosto, 2025",https://www.rsce.es/eventos/c-a-valles-club-cani-prueba-de-agility-3/,Barcelona,Activo,41.3825802,2.177073
+C.A. Badalona – Prueba de Agility,"5 septiembre, 2025","6 septiembre, 2025",https://www.rsce.es/eventos/c-a-badalona-prueba-de-agility-4/,Barcelona,Activo,41.3825802,2.177073
+C.A. El Area Jerez – Prueba de Agility,"5 septiembre, 2025","7 septiembre, 2025",https://www.rsce.es/eventos/c-a-el-area-jerez-prueba-de-agility-3/,Cádiz,Activo,36.5297438,-6.2928976
+C.A. Amics del Gos de Ondara – Prueba de Agility,"5 septiembre, 2025","7 septiembre, 2025",https://www.rsce.es/eventos/c-a-amics-del-gos-de-ondara-prueba-de-agility-4/,Ondara (Alicante),Activo,38.8277759,0.0170054
+C.A. Tercans – Prueba de Agility,"6 septiembre, 2025","7 septiembre, 2025",https://www.rsce.es/eventos/c-a-tercans-prueba-de-agility-6/,Pontevedra,Activo,42.4318876,-8.6431592
+C.A. Cantabria – Prueba de Agility,"6 septiembre, 2025","7 septiembre, 2025",https://www.rsce.es/eventos/c-a-cantabria-prueba-de-agility-2/,Cantabria,Activo,43.1595664,-4.0878382
+C.A. Indog Maria de Huerva – Prueba de Agility,"6 septiembre, 2025","7 septiembre, 2025",https://www.rsce.es/eventos/c-a-indog-maria-de-huerva-prueba-de-agility/,Zaragoza,Activo,41.6521342,-0.8809428
+C.A. Thunderdogs Galicia – Prueba de Agility,"13 septiembre, 2025","14 septiembre, 2025",https://www.rsce.es/eventos/c-a-thunderdogs-galicia-prueba-de-agility-4/,Pontevedra,Activo,42.4318876,-8.6431592
+C.A. AA y Cia – Prueba de Agility,"13 septiembre, 2025","14 septiembre, 2025",https://www.rsce.es/eventos/c-a-aa-y-cia-prueba-de-agility/,Madrid,Activo,40.4167047,-3.7035825
+C.A. Maresme – Prueba de Agility,"13 septiembre, 2025","14 septiembre, 2025",https://www.rsce.es/eventos/c-a-maresme-prueba-de-agility-5/,Barcelona,Activo,41.3825802,2.177073
+C.A. Valle de Güimar – Prueba de Agility,"13 septiembre, 2025","14 septiembre, 2025",https://www.rsce.es/eventos/c-a-valle-de-guimar-prueba-de-agility-3/,Tenerife,Activo,28.2935785,-16.6214471
+C.A. Xanastur – Prueba de Agility,"26 septiembre, 2025","28 septiembre, 2025",https://www.rsce.es/eventos/c-a-xanastur-prueba-de-agility-6/,Oviedo,Activo,43.3618625,-5.8483581
+C.A. Somnium – Prueba de Agility,"27 septiembre, 2025","28 septiembre, 2025",https://www.rsce.es/eventos/c-a-somnium-prueba-de-agility-3/,Castellón,Activo,40.2518568,-0.0615052
+C.A. Ourencan – Prueba de Agility,"27 septiembre, 2025","28 septiembre, 2025",https://www.rsce.es/eventos/c-a-ourencan-prueba-de-agility-2/,Orense,Activo,42.1939629,-7.537124
+C.A. Canlosal – Prueba de Agility,"4 octubre, 2025","5 octubre, 2025",https://www.rsce.es/eventos/c-a-canlosal-prueba-de-agility/,Las Palmas,Activo,27.9580004,-15.6062305
+C.A. Villena – Prueba de Agility,"4 octubre, 2025","5 octubre, 2025",https://www.rsce.es/eventos/c-a-villena-prueba-de-agility-3/,Alicante,Activo,38.3436365,-0.4881708
+C.A. Divertidog Sonrisas y Huellas – Prueba de Agility,"4 octubre, 2025","5 octubre, 2025",https://www.rsce.es/eventos/c-a-divertidog-sonrisas-y-huellas-prueba-de-agility-6/,Zaragoza,Activo,41.6521342,-0.8809428
+C.A. L’Horta Nord – Prueba de Agility,"9 octubre, 2025","12 octubre, 2025",https://www.rsce.es/eventos/c-a-lhorta-nord-prueba-de-agility/,Valencia,Activo,39.4697065,-0.3763353
+C.A. Mancur’s – Prueba de Agility,"11 octubre, 2025","12 octubre, 2025",https://www.rsce.es/eventos/c-a-mancurs-prueba-de-agility-2/,Toledo,Activo,39.8560679,-4.0239568
+C.A. Valles Club Cani – Prueba de Agility,"11 octubre, 2025","12 octubre, 2025",https://www.rsce.es/eventos/c-a-valles-club-cani-prueba-de-agility-4/,Barcelona,Activo,41.3825802,2.177073
+C.A. Depordog – Prueba de Agility,"11 octubre, 2025","13 octubre, 2025",https://www.rsce.es/eventos/c-a-depordog-prueba-de-agility-2/,Cádiz,Activo,36.5297438,-6.2928976
+Copa en España de Agility de la RSCE para la raza Perro de Pastor Belga,"12 octubre, 2025",,https://www.rsce.es/eventos/copa-en-espana-de-agility-de-la-rsce-para-la-raza-perro-de-pastor-belga-2/,Algeciras (Cádiz),Activo,36.1311725,-5.4473991
+C.A. Amics del Gos de Ondara – Prueba de Agility,"17 octubre, 2025","19 octubre, 2025",https://www.rsce.es/eventos/c-a-amics-del-gos-de-ondara-prueba-de-agility-5/,Ondara (Alicante),Activo,38.8277759,0.0170054
+C.A. Tercans – Prueba de Agility,"18 octubre, 2025","19 octubre, 2025",https://www.rsce.es/eventos/c-a-tercans-prueba-de-agility-7/,Pontevedra,Activo,42.4318876,-8.6431592
+C.A. Tinerfe – Prueba de Agility,"18 octubre, 2025","19 octubre, 2025",https://www.rsce.es/eventos/c-a-tinerfe-prueba-de-agility-2/,Tenerife,Activo,28.2935785,-16.6214471
+C.A. La Princesa – Prueba de Agility,"18 octubre, 2025","19 octubre, 2025",https://www.rsce.es/eventos/c-a-la-princesa-prueba-de-agility/,Madrid,Activo,40.4167047,-3.7035825
+C.A. Les Fonts – Prueba de Agility,"18 octubre, 2025","19 octubre, 2025",https://www.rsce.es/eventos/c-a-les-fonts-prueba-de-agility-3/,Barcelona,Activo,41.3825802,2.177073
+C.A. Zarajump – Prueba de Agility,"18 octubre, 2025","19 octubre, 2025",https://www.rsce.es/eventos/c-a-zarajump-prueba-de-agility-4/,Gotor (Zaragoza),Activo,41.5459291,-1.6499755
+Copa en España de Agility de la RSCE para las razas españolas,"18 octubre, 2025",,https://www.rsce.es/eventos/copa-en-espana-de-agility-de-la-rsce-para-las-razas-espanolas/,Ondara (Alicante),Activo,38.8277759,0.0170054
+Copa en España de Agility de la RSCE para la raza Cocker Spaniel,"19 octubre, 2025",,https://www.rsce.es/eventos/copa-en-espana-de-agility-de-la-rsce-para-la-raza-cocker-spaniel-2/,Ondara (Alicante),Activo,38.8277759,0.0170054
+C.A. The Paws By Patas – Prueba de Agility,"25 octubre, 2025","26 octubre, 2025",https://www.rsce.es/eventos/c-a-the-paws-by-patas-prueba-de-agility-2/,Pontevedra,Activo,42.4318876,-8.6431592
+C.A. Costa Blanca – Prueba de Agility,"25 octubre, 2025","26 octubre, 2025",https://www.rsce.es/eventos/c-a-costa-blanca-prueba-de-agility-2/,Alicante,Activo,38.3436365,-0.4881708
+C.A. Mikan – Prueba de Agility,"25 octubre, 2025","26 octubre, 2025",https://www.rsce.es/eventos/c-a-mikan-prueba-de-agility-3/,Madrid,Activo,40.4167047,-3.7035825
+C.A. Pawer – Prueba de Agility,"25 octubre, 2025","26 octubre, 2025",https://www.rsce.es/eventos/c-a-pawer-prueba-de-agility-5/,Cantabria,Activo,43.1595664,-4.0878382
+C.A. L’Almozara Can Bosc – Prueba de Agility,"1 noviembre, 2025","2 noviembre, 2025",https://www.rsce.es/eventos/c-a-lalmozara-can-bosc-prueba-de-agility-3/,Barcelona,Activo,41.3825802,2.177073
+C.A. Almussafes – Prueba de Agility,"8 noviembre, 2025","9 noviembre, 2025",https://www.rsce.es/eventos/c-a-almussafes-prueba-de-agility/,Valencia,Activo,39.4697065,-0.3763353
+C.A. Do It – Prueba de Agility,"8 noviembre, 2025","9 noviembre, 2025",https://www.rsce.es/eventos/c-a-do-it-prueba-de-agility/,Madrid,Activo,40.4167047,-3.7035825
+C.A. Sa Roca – Prueba de Agility,"8 noviembre, 2025","9 noviembre, 2025",https://www.rsce.es/eventos/c-a-sa-roca-prueba-de-agility/,Zaragoza,Activo,41.6521342,-0.8809428
+C.A. Valle de Güimar – Prueba de Agility,"8 noviembre, 2025","9 noviembre, 2025",https://www.rsce.es/eventos/c-a-valle-de-guimar-prueba-de-agility-4/,Tenerife,Activo,28.2935785,-16.6214471
+C.A. Xanastur – Prueba de Agility,"8 noviembre, 2025","9 noviembre, 2025",https://www.rsce.es/eventos/c-a-xanastur-prueba-de-agility-7/,Oviedo,Activo,43.3618625,-5.8483581
+C.A. Ourencan – Prueba de Agility,"8 noviembre, 2025","9 noviembre, 2025",https://www.rsce.es/eventos/c-a-ourencan-prueba-de-agility-3/,Orense,Activo,42.1939629,-7.537124
+C.A. Rio Mula – Prueba de Agility,"8 noviembre, 2025","9 noviembre, 2025",https://www.rsce.es/eventos/c-a-rio-mula-prueba-de-agility-2/,Murcia,Activo,37.9923795,-1.1305431
+C.A. El Area Jerez – Prueba de Agility,"14 noviembre, 2025","16 noviembre, 2025",https://www.rsce.es/eventos/c-a-el-area-jerez-prueba-de-agility-4/,Cádiz,Activo,36.5297438,-6.2928976
+C.A. Baix Llobregat – Prueba de Agility,"15 noviembre, 2025","16 noviembre, 2025",https://www.rsce.es/eventos/c-a-baix-llobregat-prueba-de-agility-3/,Barcelona,Activo,41.3825802,2.177073
+C.A. Divertidog Sonrisas y Huellas – Prueba de Agility,"15 noviembre, 2025","16 noviembre, 2025",https://www.rsce.es/eventos/c-a-divertidog-sonrisas-y-huellas-prueba-de-agility-4/,Zaragoza,Activo,41.6521342,-0.8809428
+C.A. Star Can – Prueba de Agility,"15 noviembre, 2025","16 noviembre, 2025",https://www.rsce.es/eventos/c-a-star-can-prueba-de-agility-2/,Alicante,Activo,38.3436365,-0.4881708
+C.A. Pinto – Prueba de Agility,"15 noviembre, 2025","16 noviembre, 2025",https://www.rsce.es/eventos/c-a-pinto-prueba-de-agility/,Madrid,Activo,40.4167047,-3.7035825
+Copa en España de Agility de la RSCE para la raza Perro de Agua Español,"15 noviembre, 2025",,https://www.rsce.es/eventos/copa-en-espana-de-agility-de-la-rsce-para-la-raza-perro-de-agua-espanol-2/,Paterna de Rivera (Cádiz),Activo,36.5229634,-5.864702
+C.A. Implican – Prueba de Agility,"21 noviembre, 2025","23 noviembre, 2025",https://www.rsce.es/eventos/c-a-implican-prueba-de-agility-3/,Yunquera de Henares (Guadalajara),Activo,40.7546981,-3.1662667
+C.A. Tercans – Prueba de Agility,"22 noviembre, 2025","23 noviembre, 2025",https://www.rsce.es/eventos/c-a-tercans-prueba-de-agility-8/,Pontevedra,Activo,42.4318876,-8.6431592
+C.A. Sigue Hop Gran Canaria – Prueba de Agility,"22 noviembre, 2025","23 noviembre, 2025",https://www.rsce.es/eventos/c-a-sigue-hop-gran-canaria-prueba-de-agility-3/,Las Palmas de Gran Canaria,Activo,28.1288694,-15.4349015
+C.A. Pawer – Prueba de Agility,"22 noviembre, 2025","23 noviembre, 2025",https://www.rsce.es/eventos/c-a-pawer-prueba-de-agility-6/,Cantabria,Activo,43.1595664,-4.0878382
+C.A. Villena – Prueba de Agility,"22 noviembre, 2025","23 noviembre, 2025",https://www.rsce.es/eventos/c-a-villena-prueba-de-agility-5/,Alicante,Activo,38.3436365,-0.4881708
+C.A. Thunderdogs Galicia – Prueba de Agility,"28 noviembre, 2025","29 noviembre, 2025",https://www.rsce.es/eventos/c-a-thunderdogs-galicia-prueba-de-agility-6/,Pontevedra,Activo,42.4318876,-8.6431592
+C.A. Agilcan – Prueba de Agility,"29 noviembre, 2025","30 noviembre, 2025",https://www.rsce.es/eventos/c-a-agilcan-prueba-de-agility-2/,Madrid,Activo,40.4167047,-3.7035825
+C.A. Ciutat Comtal – Prueba de Agility,"29 noviembre, 2025",,https://www.rsce.es/eventos/c-a-ciutat-comtal-prueba-de-agility-4/,Barcelona,Activo,41.3825802,2.177073
+C.A. Neo Reus – Prueba de Agility,"5 diciembre, 2025","8 diciembre, 2025",https://www.rsce.es/eventos/c-a-neo-reus-prueba-de-agility-3/,Tarragona,Activo,41.1172364,1.2546057
+C.A. Haguayan – Prueba de Agility,"6 diciembre, 2025","8 diciembre, 2025",https://www.rsce.es/eventos/c-a-haguayan-prueba-de-agility-3/,Las Palmas,Activo,27.9580004,-15.6062305
+C.A. Costa Blanca – Prueba de Agility,"6 diciembre, 2025","7 diciembre, 2025",https://www.rsce.es/eventos/c-a-costa-blanca-prueba-de-agility-3/,Alicante,Activo,38.3436365,-0.4881708
+C.A. Amics del Gos – Prueba de Agility,"12 diciembre, 2025","14 diciembre, 2025",https://www.rsce.es/eventos/c-a-amics-del-gos-prueba-de-agility/,Ondara (Alicante),Activo,38.8277759,0.0170054
+C.A. Momo – Prueba de Agility,"13 diciembre, 2025","14 diciembre, 2025",https://www.rsce.es/eventos/c-a-momo-prueba-de-agility-3/,Cuenca,Activo,40.0661031,-2.1313528
+C.A. Zarajump – Prueba de Agility,"13 diciembre, 2025","14 diciembre, 2025",https://www.rsce.es/eventos/c-a-zarajump-prueba-de-agility-5/,Gotor (Zaragoza),Activo,41.5459291,-1.6499755
+C.A. La Daga – Prueba de Agility,"13 diciembre, 2025",,https://www.rsce.es/eventos/c-a-la-daga-prueba-de-agility/,Lérida,Activo,41.6147605,0.6267842
+C.A. Tinerfe – Prueba de Agility,"20 diciembre, 2025","21 diciembre, 2025",https://www.rsce.es/eventos/c-a-tinerfe-prueba-de-agility-3/,Tenerife,Activo,28.2935785,-16.6214471
+C.A. L’Almozara – Prueba de Agility,"20 diciembre, 2025","21 diciembre, 2025",https://www.rsce.es/eventos/c-a-lalmozara-prueba-de-agility/,Zaragoza,Activo,41.6521342,-0.8809428
+C.A. Depordog – Prueba de Agility,"20 diciembre, 2025","21 diciembre, 2025",https://www.rsce.es/eventos/c-a-depordog-prueba-de-agility-3/,Cádiz,Activo,36.5297438,-6.2928976
+C.A. Mi Perro 10 – Prueba de Agility,"20 diciembre, 2025","21 diciembre, 2025",https://www.rsce.es/eventos/c-a-mi-perro-10-prueba-de-agility-2/,Madrid,Activo,40.4167047,-3.7035825
+C.A. Evo Dog’s – Prueba de Agility,"20 diciembre, 2025","21 diciembre, 2025",https://www.rsce.es/eventos/c-a-evo-dogs-prueba-de-agility-3/,Asturias,Activo,43.3133868,-5.94192
+C.A. Badalona – Prueba de Agility,"20 diciembre, 2025",,https://www.rsce.es/eventos/c-a-badalona-prueba-de-agility-5/,Barcelona,Activo,41.3825802,2.177073
+C.A. Divertidog Sonrisas y Huellas – Prueba de Agility,"26 diciembre, 2025","28 diciembre, 2025",https://www.rsce.es/eventos/c-a-divertidog-sonrisas-y-huellas-prueba-de-agility-5/,Zaragoza,Activo,41.6521342,-0.8809428
+C.A. Elite Dogs – Prueba de Agility,"27 diciembre, 2025","28 diciembre, 2025",https://www.rsce.es/eventos/c-a-elite-dogs-prueba-de-agility-3/,Madrid,Activo,40.4167047,-3.7035825
+C.A. Rivalcan – Prueba de Agility,"27 diciembre, 2025","28 diciembre, 2025",https://www.rsce.es/eventos/c-a-rivalcan-prueba-de-agility-4/,Barcelona,Activo,41.3825802,2.177073
+C.A. Parque del Alamillo – Prueba de Agility,"27 diciembre, 2025","28 diciembre, 2025",https://www.rsce.es/eventos/c-a-parque-del-alamillo-prueba-de-agility-4/,Sevilla,Activo,37.3886303,-5.9953403
