@@ -1,14 +1,7 @@
-import os
-import csv
-import time
-import re
-import datetime
-from dataclasses import dataclass
+import os, csv, time, re, datetime
 from typing import List, Tuple, Optional
-
 from bs4 import BeautifulSoup
 
-# Selenium
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service as ChromeService
@@ -17,291 +10,220 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 
-# .env
+from geopy.geocoders import Nominatim
+from geopy.extra.rate_limiter import RateLimiter
+
 try:
     from dotenv import load_dotenv
     load_dotenv()
-except Exception:
+except:
     pass
 
-
-# =========================
-# Utilidades de fechas
-# =========================
+# ====== Fechas en español ======
 SPANISH_MONTHS = {
-    "enero": 1, "febrero": 2, "marzo": 3, "abril": 4, "mayo": 5, "junio": 6,
-    "julio": 7, "agosto": 8, "septiembre": 9, "setiembre": 9, "octubre": 10,
-    "noviembre": 11, "diciembre": 12
+    "enero":1,"febrero":2,"marzo":3,"abril":4,"mayo":5,"junio":6,
+    "julio":7,"agosto":8,"septiembre":9,"setiembre":9,"octubre":10,
+    "noviembre":11,"diciembre":12
 }
+DATE_RE = re.compile(r"(\d{1,2})\s+([A-Za-záéíóúñ]+),?\s+(\d{4})")
 
-DATE_RE = re.compile(
-    r"(?P<d>\d{1,2})\s+(?P<m>[A-Za-záéíóúÁÉÍÓÚñÑ]+),?\s+(?P<y>\d{4})"
-)
-
-def parse_spanish_date(txt: str) -> Optional[datetime.date]:
-    """
-    Convierte '22 agosto, 2025' -> date(2025, 8, 22).
-    Retorna None si no puede parsear.
-    """
-    if not txt:
-        return None
-    m = DATE_RE.search(txt.strip())
-    if not m:
-        return None
+def parse_spanish_date(txt:str)->Optional[datetime.date]:
+    if not txt: return None
+    t = txt.strip().lower().replace(" de ", " ")
+    m = DATE_RE.search(t)
+    if not m: return None
     try:
-        d = int(m.group("d"))
-        mm = SPANISH_MONTHS.get(m.group("m").lower())
-        y = int(m.group("y"))
-        if not mm:
-            return None
-        return datetime.date(y, mm, d)
-    except Exception:
-        return None
+        d, mm, y = int(m.group(1)), m.group(2), int(m.group(3))
+        mnum = SPANISH_MONTHS.get(mm)
+        return datetime.date(y, mnum, d) if mnum else None
+    except: return None
 
+def parse_date_range(inicio:str, fin:str)->Tuple[Optional[datetime.date], Optional[datetime.date]]:
+    return parse_spanish_date(inicio), parse_spanish_date(fin)
 
-def parse_date_range(inicio_txt: str, fin_txt: str) -> Tuple[Optional[datetime.date], Optional[datetime.date]]:
-    """
-    Devuelve (fecha_inicio, fecha_fin) como date o None.
-    """
-    di = parse_spanish_date(inicio_txt)
-    df = parse_spanish_date(fin_txt)
-    return di, df
-
-
-# =========================
-# Scraper
-# =========================
-@dataclass
-class Config:
-    URL_BASE: str
-    CARPETA_DESTINO: str
-    NOMBRE_CSV: str
-    SOLO_PRIMERA_PAGINA: bool
-    FILTRAR_DESDE_HOY: bool
-    ESPERA_CORTA: float = 0.7
-    ESPERA_MEDIA: float = 1.2
-
-    @property
-    def ruta_csv(self) -> str:
-        return os.path.join(self.CARPETA_DESTINO, self.NOMBRE_CSV)
-
-
+# ====== Scraper reducido (CSV + Lat/Lon) ======
 class RSCEAgilityCSV:
-    def __init__(self, cfg: Config):
-        self.cfg = cfg
-        os.makedirs(self.cfg.CARPETA_DESTINO, exist_ok=True)
+    def __init__(self):
+        self.URL_BASE = os.getenv("URL_BASE",
+            "https://www.rsce.es/eventos-rsce/jsf/jet-engine:eventocuadro/tax/tipos-de-disciplinas:38/meta/fecha-evento!date:2025.1.1-/"
+        )
+        self.OUTDIR   = os.getenv("CARPETA_DESTINO","./resultados_agility")
+        self.OUTCSV   = os.path.join(self.OUTDIR, os.getenv("NOMBRE_CSV","eventos_agility_2025.csv"))
+        self.SOLO_PRIMERA = os.getenv("SOLO_PRIMERA_PAGINA","false").lower() in ("1","true","si","sí","y")
+        self.MAX_PAGINAS  = int(os.getenv("MAX_PAGINAS", "50"))
+        self.APLICAR_FILTRO_UI = os.getenv("APLICAR_FILTRO_UI","true").lower() in ("1","true","si","sí","y")
+        self.FILTRAR_DESDE_HOY = os.getenv("FILTRAR_DESDE_HOY","true").lower() in ("1","true","si","sí","y")
+
+        os.makedirs(self.OUTDIR, exist_ok=True)
 
     # ---------- Selenium ----------
     def _init_driver(self):
-        opts = Options()
+        opts=Options()
         opts.add_argument("--headless=new")
-        opts.add_argument("--disable-gpu")
-        opts.add_argument("--no-sandbox")
-        opts.add_argument("--window-size=1920,1080")
+        opts.add_argument("--disable-gpu"); opts.add_argument("--no-sandbox")
+        opts.add_argument("--window-size=1600,1000")
         return webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=opts)
 
-    def _esperar_listado(self, driver):
-        WebDriverWait(driver, 15).until(
-            EC.presence_of_element_located((By.CLASS_NAME, "jet-listing-grid__item"))
-        )
-        time.sleep(self.cfg.ESPERA_CORTA)
+    def _esperar_listado(self,d):
+        WebDriverWait(d, 20).until(EC.presence_of_element_located((By.CLASS_NAME,"jet-listing-grid__item")))
+        time.sleep(0.7)
 
-    def _scroll_hasta_el_final(self, driver, pause=1.0, max_reps=2):
-        last_h = driver.execute_script("return document.body.scrollHeight")
-        reps = 0
-        while reps < max_reps:
-            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+    def _scroll_hasta_el_final(self,d, rounds=3, pause=1.0):
+        for _ in range(rounds):
+            d.execute_script("window.scrollTo(0, document.body.scrollHeight);")
             time.sleep(pause)
-            new_h = driver.execute_script("return document.body.scrollHeight")
-            if new_h == last_h:
-                reps += 1
-            else:
-                last_h = new_h
-                reps = 0
 
-    def _detectar_total_paginas(self, driver) -> int:
-        """
-        Busca la paginación y devuelve el mayor número encontrado (>=1).
-        Si no hay paginación, devuelve 1.
-        """
+    def _aplicar_filtro_desde_hoy_ui(self, d):
+        """Rellena inputs 'Desde' = hoy, 'Hasta' = vacío y pulsa Ordenar (si existe)."""
         try:
-            # En la RSCE suelen ser DIVs con clase 'jet-filters-pagination__link'
-            elems = driver.find_elements(By.CSS_SELECTOR, ".jet-filters-pagination__link")
-            nums = []
+            hoy = datetime.date.today().strftime("%d/%m/%Y")
+            desde = d.find_element(By.CSS_SELECTOR, "input.jet-date-range__from")
+            hasta = d.find_element(By.CSS_SELECTOR, "input.jet-date-range__to")
+            d.execute_script("""
+                arguments[0].value = arguments[2];
+                arguments[0].dispatchEvent(new Event('input')); arguments[0].dispatchEvent(new Event('change'));
+                arguments[1].value = '';
+                arguments[1].dispatchEvent(new Event('input')); arguments[1].dispatchEvent(new Event('change'));
+            """, desde, hasta, hoy)
+            # botón Ordenar si lo hay
+            try:
+                ordenar = d.find_element(By.XPATH, "//button[normalize-space(.)='Ordenar'] | //input[@value='Ordenar']")
+                d.execute_script("arguments[0].click();", ordenar)
+            except Exception:
+                pass
+            self._esperar_listado(d)
+            print("[DEBUG] Filtro UI 'Desde=hoy' aplicado")
+        except Exception as e:
+            print(f"[WARN] No se pudo aplicar filtro UI: {e}")
+
+    def _detectar_total_paginas(self,d)->int:
+        try:
+            elems = d.find_elements(By.CSS_SELECTOR, ".jet-filters-pagination__link")
+            nums=[]
             for el in elems:
-                txt = (el.text or "").strip()
-                if txt.isdigit():
-                    nums.append(int(txt))
+                txt=(el.text or "").strip()
+                if txt.isdigit(): nums.append(int(txt))
             total = max(nums) if nums else 1
             print(f"[DEBUG] total_pages detectadas: {total}")
-            return max(total, 1)
+            return max(1, min(total, self.MAX_PAGINAS))
         except Exception:
             return 1
 
-    def _ir_a_pagina(self, driver, page_num: int) -> bool:
-        """
-        Navega a una página concreta de la paginación. Devuelve True si cree haberlo conseguido.
-        """
+    def _ir_a_pagina(self,d, page_num:int)->bool:
         try:
-            # La primera página ya está cargada; si piden 1, no tocar nada
-            if page_num == 1:
-                return True
-
-            # Botón por número exacto
-            btn = WebDriverWait(driver, 5).until(
-                EC.element_to_be_clickable((
-                    By.XPATH,
-                    f"//div[contains(@class,'jet-filters-pagination__link') and normalize-space(text())='{page_num}']"
-                ))
+            if page_num==1: return True
+            btn = WebDriverWait(d, 5).until(
+                EC.element_to_be_clickable((By.XPATH, f"//div[contains(@class,'jet-filters-pagination__link') and normalize-space(text())='{page_num}']"))
             )
-            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", btn)
-            driver.execute_script("arguments[0].click();", btn)
-            self._esperar_listado(driver)
+            d.execute_script("arguments[0].scrollIntoView({block:'center'});", btn)
+            d.execute_script("arguments[0].click();", btn)
+            self._esperar_listado(d)
             return True
         except Exception:
-            # Reintentar con botón 'Siguiente' las veces necesarias
             try:
-                next_btn = driver.find_element(By.CSS_SELECTOR, ".jet-filters-pagination__link.next")
-                driver.execute_script("arguments[0].scrollIntoView({block:'center'});", next_btn)
-                driver.execute_script("arguments[0].click();", next_btn)
-                self._esperar_listado(driver)
+                nxt = d.find_element(By.CSS_SELECTOR, ".jet-filters-pagination__link.next")
+                d.execute_script("arguments[0].scrollIntoView({block:'center'});", nxt)
+                d.execute_script("arguments[0].click();", nxt)
+                self._esperar_listado(d)
                 return True
             except Exception:
                 print("    ⚠️ Paginación no disponible o fin de páginas.")
                 return False
 
     # ---------- Parse ----------
-    def _extraer_eventos_de_html(self, html: str) -> List[Tuple[str, str, str, str, str]]:
-        """
-        Devuelve lista de tuplas (nombre, inicio, fin, url, ciudad) de la página actual.
-        """
-        soup = BeautifulSoup(html, "html.parser")
+    def _extraer_eventos(self, html)->List[Tuple[str,str,str,str,str]]:
+        soup=BeautifulSoup(html,"html.parser")
         bloques = soup.select("div.jet-listing-grid__item")
-        eventos = []
+        eventos=[]
         for b in bloques:
-            try:
-                h2 = b.find("h2")
-                if not h2:
-                    continue
-                a = h2.find("a")
-                nombre = h2.get_text(strip=True)
-                url = a.get("href", "").strip() if a else ""
-                fechas = b.select(".jet-listing-dynamic-field__content")
-                inicio = fechas[0].get_text(strip=True) if len(fechas) > 0 else ""
-                fin = fechas[1].get_text(strip=True) if len(fechas) > 1 else ""
-                lugar = b.select_one(".elementor-icon-box-title span")
-                ciudad = lugar.get_text(strip=True) if lugar else ""
+            h2=b.find("h2")
+            if not h2: continue
+            a=h2.find("a")
+            nombre=h2.get_text(strip=True) if h2 else ""
+            url=a.get("href","").strip() if a else ""
+            fechas=b.select(".jet-listing-dynamic-field__content")
+            inicio=fechas[0].get_text(strip=True) if len(fechas)>0 else ""
+            fin   =fechas[1].get_text(strip=True) if len(fechas)>1 else ""
+            lugar =b.select_one(".elementor-icon-box-title span")
+            ciudad=lugar.get_text(strip=True) if lugar else ""
+            if nombre or url:
                 eventos.append((nombre, inicio, fin, url, ciudad))
-            except Exception:
-                # Silencioso; continuamos con el resto
-                pass
+        # Debug: muestra los tres primeros títulos
+        print("      Ejemplos:", [e[0][:50] for e in eventos[:3]])
         return eventos
 
-    # ---------- Filtro ----------
-    def _filtrar_desde_hoy(self, eventos: List[Tuple[str, str, str, str, str]]) -> List[Tuple[str, str, str, str, str]]:
-        """
-        Mantiene eventos cuyo fin >= hoy, o si fin no existe, cuyo inicio >= hoy.
-        """
-        if not self.cfg.FILTRAR_DESDE_HOY:
+    # ---------- Filtro por fecha (segunda capa de seguridad) ----------
+    def _filtrar_desde_hoy_post(self, eventos):
+        if not self.FILTRAR_DESDE_HOY:
             return eventos
         hoy = datetime.date.today()
-        filtrados = []
-        for (nombre, inicio, fin, url, ciudad) in eventos:
-            di, df = parse_date_range(inicio, fin)
-            keep = False
-            if df:
-                keep = (df >= hoy)
-            elif di:
-                keep = (di >= hoy)
-            else:
-                # Si no hay fechas parseables, por defecto los dejamos (o cámbialo a False si prefieres)
-                keep = True
-            if keep:
-                filtrados.append((nombre, inicio, fin, url, ciudad))
-        return filtrados
+        out=[]
+        for (n,i,f,u,c) in eventos:
+            di, df = parse_date_range(i,f)
+            keep = (df and df>=hoy) or (df is None and di and di>=hoy) or (di is None and df is None)  # si no parsea, mantener
+            if keep: out.append((n,i,f,u,c))
+        return out
+
+    # ---------- Geocoding ----------
+    def _geocode_ciudades(self, eventos):
+        geolocator=Nominatim(user_agent="agility-mapper-rsce/1.0", timeout=10)
+        geocode=RateLimiter(geolocator.geocode, min_delay_seconds=1, max_retries=2, error_wait_seconds=2, swallow_exceptions=True)
+        cache={}
+        for *_, ciudad in eventos:
+            if ciudad and ciudad not in cache:
+                q = f"{ciudad}, España"
+                loc = geocode(q)
+                cache[ciudad] = (loc.latitude, loc.longitude) if loc else (None, None)
+        return cache
 
     # ---------- CSV ----------
-    def _guardar_csv(self, eventos: List[Tuple[str, str, str, str, str]]) -> None:
-        with open(self.cfg.ruta_csv, "w", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            w.writerow(["Nombre", "Fecha inicio", "Fecha fin", "URL", "Ciudad"])
-            w.writerows(eventos)
-        print(f"📁 CSV guardado en: {self.cfg.ruta_csv}")
+    def _guardar_csv(self, eventos):
+        cache = self._geocode_ciudades(eventos)
+        with open(self.OUTCSV,"w",newline="",encoding="utf-8") as f:
+            w=csv.writer(f)
+            w.writerow(["Nombre","Fecha inicio","Fecha fin","URL","Ciudad","Latitud","Longitud"])
+            for n,i,f,u,c in eventos:
+                lat,lon = cache.get(c,(None,None)) if c else (None,None)
+                w.writerow([n,i,f,u,c,lat,lon])
+        print(f"📁 CSV guardado en {self.OUTCSV} con {len(eventos)} eventos")
 
     # ---------- Run ----------
     def run(self):
-        print(f"[DEBUG] URL_BASE: {self.cfg.URL_BASE}")
-        print(f"[DEBUG] SOLO_PRIMERA_PAGINA = {self.cfg.SOLO_PRIMERA_PAGINA}")
-        driver = self._init_driver()
-        try:
-            driver.get(self.cfg.URL_BASE)
-            self._esperar_listado(driver)
-            total_pages = self._detectar_total_paginas(driver)
+        print(f"[DEBUG] URL_BASE: {self.URL_BASE}")
+        print(f"[DEBUG] SOLO_PRIMERA_PAGINA={self.SOLO_PRIMERA} | APLICAR_FILTRO_UI={self.APLICAR_FILTRO_UI} | FILTRAR_DESDE_HOY={self.FILTRAR_DESDE_HOY}")
 
-            if self.cfg.SOLO_PRIMERA_PAGINA:
-                pages = [1]
-            else:
-                # Recorremos 1..total_pages
-                pages = list(range(1, total_pages + 1))
+        d=self._init_driver()
+        d.get(self.URL_BASE)
+        self._esperar_listado(d)
 
-            eventos_totales: List[Tuple[str, str, str, str, str]] = []
-            urls_vistas = set()
+        if self.APLICAR_FILTRO_UI:
+            self._aplicar_filtro_desde_hoy_ui(d)
 
-            for p in pages:
-                ok = self._ir_a_pagina(driver, p)
-                if not ok:
-                    break
-                # Asegurar carga de todo el contenido lazy
-                self._scroll_hasta_el_final(driver)
-                html = driver.page_source
-                eventos = self._extraer_eventos_de_html(html)
-                # Evitar duplicados por URL
-                nuevos = 0
-                for ev in eventos:
-                    url = ev[3]
-                    if url and url not in urls_vistas:
-                        eventos_totales.append(ev)
-                        urls_vistas.add(url)
-                        nuevos += 1
-                print(f"    ➕ {nuevos} eventos en página {p}")
+        total_pages = self._detectar_total_paginas(d)
+        pages = [1] if self.SOLO_PRIMERA else list(range(1, total_pages+1))
 
-            # Filtrar por fecha (desde hoy)
-            eventos_filtrados = self._filtrar_desde_hoy(eventos_totales)
+        eventos_totales=[]; seen=set()
+        for p in pages:
+            ok = self._ir_a_pagina(d, p)
+            if not ok: break
+            self._scroll_hasta_el_final(d, rounds=3)
+            html=d.page_source
+            eventos=self._extraer_eventos(html)
 
-            print(f"🔍 Total eventos recogidos: {len(eventos_totales)} | Tras filtro: {len(eventos_filtrados)}")
-            self._guardar_csv(eventos_filtrados)
+            nuevos=0
+            for ev in eventos:
+                if ev[3] and ev[3] not in seen:
+                    eventos_totales.append(ev); seen.add(ev[3]); nuevos+=1
+            print(f"    ➕ {nuevos} nuevos en página {p}")
 
-        finally:
-            driver.quit()
+        d.quit()
+        print(f"🔍 Total brutos: {len(eventos_totales)}")
 
+        eventos_filtrados = self._filtrar_desde_hoy_post(eventos_totales)
+        print(f"🔍 Tras filtro fecha: {len(eventos_filtrados)}")
 
-# =========================
-# Entrypoint
-# =========================
-def _to_bool(v: Optional[str], default: bool) -> bool:
-    if v is None:
-        return default
-    return str(v).strip().lower() in ("1", "true", "t", "yes", "y", "si", "sí")
+        self._guardar_csv(eventos_filtrados)
 
-if __name__ == "__main__":
-    # Valores por defecto sensatos
-    URL_BASE = os.getenv(
-        "URL_BASE",
-        # Agility RSCE 2025 a partir del 1 de enero:
-        "https://www.rsce.es/eventos-rsce/jsf/jet-engine:eventocuadro/tax/tipos-de-disciplinas:38/meta/fecha-evento!date:2025.1.1-/"
-    )
-    CARPETA_DESTINO = os.getenv("CARPETA_DESTINO", "./resultados_agility")
-    NOMBRE_CSV = os.getenv("NOMBRE_CSV", "eventos_agility_2025.csv")
-    SOLO_PRIMERA_PAGINA = _to_bool(os.getenv("SOLO_PRIMERA_PAGINA"), False)
-    FILTRAR_DESDE_HOY = _to_bool(os.getenv("FILTRAR_DESDE_HOY"), True)
+if __name__=="__main__":
+    RSCEAgilityCSV().run()
 
-    os.makedirs(CARPETA_DESTINO, exist_ok=True)
-
-    cfg = Config(
-        URL_BASE=URL_BASE,
-        CARPETA_DESTINO=CARPETA_DESTINO,
-        NOMBRE_CSV=NOMBRE_CSV,
-        SOLO_PRIMERA_PAGINA=SOLO_PRIMERA_PAGINA,
-        FILTRAR_DESDE_HOY=FILTRAR_DESDE_HOY,
-    )
-    RSCEAgilityCSV(cfg).run()
