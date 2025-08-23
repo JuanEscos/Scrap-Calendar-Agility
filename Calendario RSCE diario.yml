@@ -57,7 +57,7 @@ jobs:
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_KEY }}
+          password: ${{ secrets.SSH_KEY }}
           port: ${{ secrets.SSH_PORT || 22 }}
           script: |
             chmod 644 /home/agilitydivertidog/www/NewWeb/Privado/Calendar/eventos_agility_2025.csv
