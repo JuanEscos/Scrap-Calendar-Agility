@@ -1,4 +1,5 @@
-name: Test2
+name: Test Deployment
+
 on:
   workflow_dispatch: {}
 
@@ -12,9 +13,8 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Run Python script
+      - name: Crear resultado.txt de prueba
         run: |
-          # Prueba mínima: crea "resultado.txt"
           python3 - << 'PY'
 from datetime import datetime
 open("resultado.txt","w",encoding="utf-8").write(f"OK {datetime.now()}\n")
@@ -22,34 +22,59 @@ PY
           test -s resultado.txt
           sha256sum resultado.txt | awk '{print $1}' > local.sha256
 
-      - name: Upload resultado.txt via FTPS (explicito en 21)
+      # Detecta qué username funciona (simple listing)
+      - name: Detectar username FTP válido
+        id: detect
+        env:
+          FTP_SERVER:   ${{ secrets.FTP_SERVER }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+          # Añade/quita variantes si hace falta
+          CANDIDATES: |
+            ${{ secrets.FTP_USERNAME }}
+            ${{ secrets.FTP_USERNAME }}@agilitydivertidog.com
+        run: |
+          set -e
+          ok=""
+          while read -r U; do
+            echo "Probando usuario: $U"
+            if curl -s --ssl-reqd --ftp-pasv --disable-epsv \
+                 --user "$U:$FTP_PASSWORD" \
+                 "ftp://$FTP_SERVER/" -l >/dev/null 2>&1; then
+              ok="$U"; break
+            fi
+          done <<< "$CANDIDATES"
+          if [ -z "$ok" ]; then
+            echo "No se pudo autenticar con ninguno de los usuarios candidatos"; exit 1
+          fi
+          echo "USER_OK=$ok" >> "$GITHUB_OUTPUT"
+          echo "✅ Usuario válido: $ok"
+
+      - name: Subir via FTPS (puerto 21)
         env:
           FTP_SERVER:     ${{ secrets.FTP_SERVER }}
-          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
           FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
           FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
         run: |
           set -euo pipefail
-          # OJO: para FTPS explícito usa "ftp://" + --ssl-reqd (NO "ftps://")
+          USER="${{ steps.detect.outputs.USER_OK }}"
           REMOTE_URL="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/resultado.txt"
-          echo "➡ Subiendo a: $REMOTE_URL"
-          curl --fail --ssl-reqd --ftp-create-dirs \
-               --user "$FTP_USERNAME:$FTP_PASSWORD" \
+          echo "➡ Subiendo a: $REMOTE_URL con usuario $USER"
+          curl --fail --ssl-reqd --ftp-create-dirs --ftp-pasv --disable-epsv \
+               --user "$USER:$FTP_PASSWORD" \
                --upload-file "resultado.txt" "$REMOTE_URL"
 
-      - name: Verify remote (download & compare hash)
+      - name: Verificar remoto (descargar y comparar hash)
         env:
           FTP_SERVER:     ${{ secrets.FTP_SERVER }}
-          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
           FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
           FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
         run: |
           set -euo pipefail
+          USER="${{ steps.detect.outputs.USER_OK }}"
           REMOTE_URL="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/resultado.txt"
-          curl --fail --ssl-reqd \
-               --user "$FTP_USERNAME:$FTP_PASSWORD" \
+          curl --fail --ssl-reqd --ftp-pasv --disable-epsv \
+               --user "$USER:$FTP_PASSWORD" \
                --output remote.txt "$REMOTE_URL"
           sha256sum remote.txt | awk '{print $1}' > remote.sha256
-          echo "Local : $(cut -d' ' -f1 local.sha256)"
-          echo "Remoto: $(cut -d' ' -f1 remote.sha256)"
-          diff -q local.sha256 remote.sha256 && echo "✅ Hash OK"
+          diff -q local.sha256 remote.sha256
+          echo "✅ Hash OK"
