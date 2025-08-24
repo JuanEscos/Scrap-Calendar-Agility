@@ -1,5 +1,4 @@
 name: Test Deployment
-
 on:
   workflow_dispatch: {}
 
@@ -7,37 +6,23 @@ jobs:
   test_and_deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Run Python script
         run: |
-          python3 Prueba.py
+          # Prueba mínima: crea "resultado.txt"
+          python3 - << 'PY'
+from datetime import datetime
+open("resultado.txt","w",encoding="utf-8").write(f"OK {datetime.now()}\n")
+PY
           test -s resultado.txt
-          sha256sum resultado.txt > local.sha256
+          sha256sum resultado.txt | awk '{print $1}' > local.sha256
 
-      - name: Upload resultado.txt via FTPS
-        env:
-          FTP_SERVER:     ${{ secrets.FTP_SERVER }}      # ej: agilitydivertidog.com
-          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}    # usuario FTP de tu hosting
-          FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}    # contraseña FTP
-          local-dir: './Scrap-Calendar-Agility/'
-          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}  # ej: /www/NewWeb/Privado/Calendar
-          port: 21  # Add the port parameter
-        run: |
-          set -euo pipefail
-          REMOTE="ftps://${FTP_SERVER}${FTP_REMOTE_DIR}/resultado.txt"
-          echo "➡ Subiendo a: $REMOTE"
-          curl --fail --ftp-ssl --ssl-reqd --ftp-create-dirs \
-               --user "$FTP_USERNAME:$FTP_PASSWORD" \
-               --upload-file "resultado.txt" "$REMOTE"
-
-      - name: Verify remote file (download & compare hash)
+      - name: Upload resultado.txt via FTPS (explicito en 21)
         env:
           FTP_SERVER:     ${{ secrets.FTP_SERVER }}
           FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
@@ -45,11 +30,26 @@ jobs:
           FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
         run: |
           set -euo pipefail
-          REMOTE="ftps://${FTP_SERVER}${FTP_REMOTE_DIR}/resultado.txt"
-          curl --fail --ftp-ssl --ssl-reqd \
+          # OJO: para FTPS explícito usa "ftp://" + --ssl-reqd (NO "ftps://")
+          REMOTE_URL="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/resultado.txt"
+          echo "➡ Subiendo a: $REMOTE_URL"
+          curl --fail --ssl-reqd --ftp-create-dirs \
                --user "$FTP_USERNAME:$FTP_PASSWORD" \
-               --output remote.txt "$REMOTE"
-          sha256sum remote.txt > remote.sha256
+               --upload-file "resultado.txt" "$REMOTE_URL"
+
+      - name: Verify remote (download & compare hash)
+        env:
+          FTP_SERVER:     ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
+          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
+        run: |
+          set -euo pipefail
+          REMOTE_URL="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/resultado.txt"
+          curl --fail --ssl-reqd \
+               --user "$FTP_USERNAME:$FTP_PASSWORD" \
+               --output remote.txt "$REMOTE_URL"
+          sha256sum remote.txt | awk '{print $1}' > remote.sha256
           echo "Local : $(cut -d' ' -f1 local.sha256)"
           echo "Remoto: $(cut -d' ' -f1 remote.sha256)"
-          diff -q local.sha256 remote.sha256
+          diff -q local.sha256 remote.sha256 && echo "✅ Hash OK"
