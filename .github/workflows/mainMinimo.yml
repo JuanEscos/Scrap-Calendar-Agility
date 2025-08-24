@@ -1,13 +1,52 @@
-name: Sanity
+name: Test Deployment
 
 on:
   workflow_dispatch: {}
 
 jobs:
-  ping:
+  test_and_deploy:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Echo
-        run: echo "ok"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run Prueba.py and create resultado.txt
+        run: |
+          python3 Prueba.py
+          test -s resultado.txt
+          sha256sum resultado.txt | awk '{print $1}' > local.sha256
+
+      - name: Upload via FTPS (puerto 21)
+        env:
+          FTP_SERVER:     ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
+          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}   # ej: /www/NewWeb/Privado/Calendar
+        run: |
+          set -euo pipefail
+          REMOTE_URL="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/resultado.txt"
+          echo "Subiendo a: $REMOTE_URL"
+          curl --fail --ssl-reqd --ftp-create-dirs --ftp-pasv --disable-epsv \
+               --user "$FTP_USERNAME:$FTP_PASSWORD" \
+               --upload-file "resultado.txt" "$REMOTE_URL"
+
+      - name: Verify remote (download & compare hash)
+        env:
+          FTP_SERVER:     ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
+          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
+        run: |
+          set -euo pipefail
+          REMOTE_URL="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/resultado.txt"
+          curl --fail --ssl-reqd --ftp-pasv --disable-epsv \
+               --user "$FTP_USERNAME:$FTP_PASSWORD" \
+               --output remote.txt "$REMOTE_URL"
+          sha256sum remote.txt | awk '{print $1}' > remote.sha256
+          diff -q local.sha256 remote.sha256
+          echo "Hash OK"
