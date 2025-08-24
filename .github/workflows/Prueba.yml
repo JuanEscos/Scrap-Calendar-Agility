@@ -17,8 +17,7 @@ jobs:
 
       - name: Run Python script
         run: |
-          Prueba.py
-
+          python3 Prueba.py
       - name: Copy result to Web Server
         uses: appleboy/scp-action@v0.1.7
         with:
