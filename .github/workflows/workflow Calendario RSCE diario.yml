@@ -2,7 +2,7 @@ name: Calendario RSCE diario
 
 on:
   schedule:
-    - cron: '5 4 * * *'     # 04:05 UTC ≈ 06:05 en ES (verano)
+    - cron: '5 4 * * *'   # 04:05 UTC
   workflow_dispatch: {}
 
 jobs:
@@ -12,17 +12,15 @@ jobs:
       TZ: Europe/Madrid
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
           cache-dependency-path: requirements.txt
 
-      - name: Instalar dependencias
+      - name: Instalar dependencias (si existe requirements.txt)
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
@@ -35,23 +33,20 @@ jobs:
         id: csv
         run: |
           set -euo pipefail
-          # Busca el csv en subcarpetas (incluye la ruta que has mostrado)
-          CSV_PATH="$(ls -1 resultados_agility/eventos_agility_2025.csv eventos_agility_2025.csv 2>/dev/null | head -n1 || true)"
+          CSV_PATH=""
+          for p in "resultados_agility/eventos_agility_2025.csv" "eventos_agility_2025.csv"; do
+            if [ -f "$p" ]; then CSV_PATH="$p"; break; fi
+          done
           if [ -z "$CSV_PATH" ]; then
-            # Búsqueda más amplia por si cambia la carpeta
             CSV_PATH="$(ls -1 **/eventos_agility_2025.csv 2>/dev/null | head -n1 || true)"
           fi
           if [ -z "$CSV_PATH" ]; then
-            echo "No se encontró eventos_agility_2025.csv" >&2
-            find . -maxdepth 3 -type f -name "eventos_agility_2025.csv" -print || true
-            exit 1
+            echo "No se encontró eventos_agility_2025.csv"; exit 1
           fi
-          echo "➡ CSV encontrado en: $CSV_PATH"
           echo "csv_path=$CSV_PATH" >> "$GITHUB_OUTPUT"
           sha256sum "$CSV_PATH" | awk '{print $1}' > local.sha256
-          cat local.sha256
 
-      - name: Subir CSV por FTPS (TLS explícito en 21)
+      - name: Subir CSV por FTPS (puerto 21, TLS explícito)
         env:
           FTP_SERVER:     ${{ secrets.FTP_SERVER }}
           FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
@@ -62,7 +57,7 @@ jobs:
           REMOTE="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/eventos_agility_2025.csv"
           echo "➡ Subiendo a: $REMOTE"
           curl --fail --ssl-reqd --ftp-create-dirs \
-               --user "${{ secrets.FTP_USERNAME }}:${{ secrets.FTP_PASSWORD }}" \
+               --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
                --upload-file "${{ steps.csv.outputs.csv_path }}" "$REMOTE"
 
       - name: Verificar remoto (descargar y comparar hash)
@@ -78,24 +73,5 @@ jobs:
                --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
                --output remote.csv "$REMOTE"
           sha256sum remote.csv | awk '{print $1}' > remote.sha256
-          echo "Local : $(cut -d' ' -f1 local.sha256)"
-          echo "Remoto: $(cut -d' ' -f1 remote.sha256)"
           diff -q local.sha256 remote.sha256
           echo "✅ Hash OK"
-
-      # (Opcional) Copia con fecha AAAA-MM-DD
-      - name: Subir copia fechada (opcional)
-        if: always()
-        env:
-          FTP_SERVER:     ${{ secrets.FTP_SERVER }}
-          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
-          FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
-          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
-        run: |
-          set -euo pipefail
-          D=$(date +%F)
-          REMOTE="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/eventos_agility_2025_${D}.csv"
-          echo "➡ Subiendo copia a: $REMOTE"
-          curl --fail --ssl-reqd \
-               --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
-               --upload-file "${{ steps.csv.outputs.csv_path }}" "$REMOTE"
