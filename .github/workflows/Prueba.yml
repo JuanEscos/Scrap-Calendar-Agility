@@ -1,7 +1,7 @@
 name: Test Deployment
 
 on:
-  workflow_dispatch:  # This allows you to run the workflow manually
+  workflow_dispatch: {}
 
 jobs:
   test_and_deploy:
@@ -13,18 +13,41 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.x'
+          python-version: '3.11'
 
       - name: Run Python script
         run: |
           python3 Prueba.py
-      - name: Copy result to Web Server
-        uses: appleboy/scp-action@v0.1.7
-        with:
+          test -s resultado.txt
+          sha256sum resultado.txt > local.sha256
+
+      - name: Upload resultado.txt via FTPS
+        env:
+          FTP_SERVER:     ${{ secrets.FTP_SERVER }}      # ej: agilitydivertidog.com
+          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}    # usuario FTP de tu hosting
+          FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}    # contraseña FTP
+          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}  # ej: /www/NewWeb/Privado/Calendar
+        run: |
+          set -euo pipefail
+          REMOTE="ftps://${FTP_SERVER}${FTP_REMOTE_DIR}/resultado.txt"
+          echo "➡ Subiendo a: $REMOTE"
+          curl --fail --ftp-ssl --ssl-reqd --ftp-create-dirs \
+               --user "$FTP_USERNAME:$FTP_PASSWORD" \
+               --upload-file "resultado.txt" "$REMOTE"
+
+      - name: Verify remote file (download & compare hash)
+        env:
           FTP_SERVER:     ${{ secrets.FTP_SERVER }}
           FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
           FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
           FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
-          source: 'resultado.txt'
-          target: "/home/agilitydivertidog/www/NewWeb/Privado/Calendar/"
-          overwrite: true
+        run: |
+          set -euo pipefail
+          REMOTE="ftps://${FTP_SERVER}${FTP_REMOTE_DIR}/resultado.txt"
+          curl --fail --ftp-ssl --ssl-reqd \
+               --user "$FTP_USERNAME:$FTP_PASSWORD" \
+               --output remote.txt "$REMOTE"
+          sha256sum remote.txt > remote.sha256
+          echo "Local : $(cut -d' ' -f1 local.sha256)"
+          echo "Remoto: $(cut -d' ' -f1 remote.sha256)"
+          diff -q local.sha256 remote.sha256
