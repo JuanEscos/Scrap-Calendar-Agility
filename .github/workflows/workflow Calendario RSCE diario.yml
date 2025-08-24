@@ -27,7 +27,7 @@ jobs:
       - name: Ejecutar script que genera el CSV
         run: |
           python "./Calendario RSCE 25.08.22.py"
-          test -f "eventos_agility_2025.csv"
+          test -f "eventos_agility_2025bueno.csv"
 
       - name: Copiar CSV al servidor (SSH key)
         uses: appleboy/scp-action@v0.1.7
