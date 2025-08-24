@@ -29,72 +29,29 @@ jobs:
         run: |
           python "./Calendario RSCE 25.08.22.py"
 
-      - name: Detectar CSV generado y calcular hash/tamaño
+      - name: Localizar CSV y calcular hash
         id: csv
         run: |
           set -euo pipefail
-          CSV_PATH=""
-          for p in "resultados_agility/eventos_agility_2025.csv" "eventos_agility_2025.csv"; do
-            if [ -f "$p" ]; then CSV_PATH="$p"; break; fi
-          done
+          CSV_PATH="$(find . -type f -name 'eventos_agility_2025.csv' -print -quit)"
           if [ -z "$CSV_PATH" ]; then
-            CSV_PATH="$(ls -1 **/eventos_agility_2025.csv 2>/dev/null | head -n1 || true)"
+            echo 'No se encontró eventos_agility_2025.csv'; exit 1
           fi
-          if [ -z "$CSV_PATH" ]; then
-            echo "No se encontró eventos_agility_2025.csv"; exit 1
-          fi
-          echo "➡ CSV encontrado en: $CSV_PATH"
           echo "csv_path=$CSV_PATH" >> "$GITHUB_OUTPUT"
-
           sha256sum "$CSV_PATH" | awk '{print $1}' > local.sha256
-          echo "local_hash=$(cut -d' ' -f1 local.sha256)" >> "$GITHUB_OUTPUT"
-
-          LOCAL_SIZE=$(stat -c%s "$CSV_PATH")
-          echo "local_size=$LOCAL_SIZE" >> "$GITHUB_OUTPUT"
-          echo "Hash local: $(cut -d' ' -f1 local.sha256)"
-          echo "Tamaño local: $LOCAL_SIZE bytes"
 
       - name: Listar carpeta remota (antes de subir)
         env:
           FTP_SERVER:     ${{ secrets.FTP_SERVER }}
           FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
           FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
-          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}    # /www/NewWeb/Privado
+          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}   # /www/NewWeb/Privado
         run: |
           set -euo pipefail
           BASE="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/Calendar"
-          echo "📂 Listando: ${BASE}/"
           curl --fail --ssl-reqd --user "${FTP_USERNAME}:${FTP_PASSWORD}" "${BASE}/" -l || true
 
-      - name: Subir CSV por FTPS (robusto: binario, no EPSV, temp+rename)
-        env:
-          FTP_SERVER:     ${{ secrets.FTP_SERVER }}
-          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
-          FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
-          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}    # /www/NewWeb/Privado
-        run: |
-          set -euo pipefail
-          FULL_DIR="${FTP_REMOTE_DIR}/Calendar"
-          BASE="ftp://${FTP_SERVER}${FULL_DIR}"
-          FILE="eventos_agility_2025.csv"
-          TMP="${BASE}/${FILE}.part"
-          FINAL="${BASE}/${FILE}"
-
-          echo "⬆️  Subiendo (temporal): $TMP"
-          # Forzar binario y TLS en datos; desactivar EPSV y evitar IP PASV errónea.
-          curl --fail --ssl-reqd --ftp-create-dirs --disable-epsv --ftp-skip-pasv-ip \
-               --quote "TYPE I" --quote "PBSZ 0" --quote "PROT P" \
-               --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
-               --upload-file "${{ steps.csv.outputs.csv_path }}" "$TMP"
-
-          echo "🔁 Renombrando a definitivo…"
-          curl --fail --ssl-reqd \
-               --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
-               --quote "RNFR ${FULL_DIR}/${FILE}.part" \
-               --quote "RNTO ${FULL_DIR}/${FILE}" \
-               "ftp://${FTP_SERVER}/"
-
-      - name: Verificar remoto (listar, descargar y comparar hash/tamaño)
+      - name: Subir CSV por FTPS (TLS explícito en 21)
         env:
           FTP_SERVER:     ${{ secrets.FTP_SERVER }}
           FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
@@ -103,28 +60,12 @@ jobs:
         run: |
           set -euo pipefail
           BASE="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/Calendar"
-          FILE="eventos_agility_2025.csv"
-
-          echo "📂 Listando tras subir: ${BASE}/"
-          curl --fail --ssl-reqd --user "${FTP_USERNAME}:${FTP_PASSWORD}" "${BASE}/" -l
-
-          echo "⬇️  Descargando ${FILE} para verificación…"
-          curl --fail --ssl-reqd --disable-epsv --ftp-skip-pasv-ip \
+          curl --fail --ssl-reqd --ftp-create-dirs --disable-epsv --ftp-skip-pasv-ip \
                --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
-               --output remote.csv "${BASE}/${FILE}"
+               --upload-file "${{ steps.csv.outputs.csv_path }}" \
+               "${BASE}/eventos_agility_2025.csv"
 
-          sha256sum remote.csv | awk '{print $1}' > remote.sha256
-          echo "Hash local : ${{ steps.csv.outputs.local_hash }}"
-          echo "Hash remoto: $(cut -d' ' -f1 remote.sha256)"
-          diff -q local.sha256 remote.sha256
-
-          REMOTE_SIZE=$(stat -c%s remote.csv)
-          echo "Tamaño remoto: $REMOTE_SIZE bytes"
-          test "$REMOTE_SIZE" -eq "${{ steps.csv.outputs.local_size }}"
-          echo "✅ Hash y tamaño coinciden"
-
-      - name: Subir copia con fecha (AAAA-MM-DD) (opcional)
-        if: always()
+      - name: Verificar remoto (descargar y comparar hash)
         env:
           FTP_SERVER:     ${{ secrets.FTP_SERVER }}
           FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
@@ -132,22 +73,10 @@ jobs:
           FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
         run: |
           set -euo pipefail
-          D=$(date +%F)
-          FULL_DIR="${FTP_REMOTE_DIR}/Calendar"
-          BASE="ftp://${FTP_SERVER}${FULL_DIR}"
-          SRC="${{ steps.csv.outputs.csv_path }}"
-          TMP="${BASE}/eventos_agility_2025_${D}.csv.part"
-          DST="${BASE}/eventos_agility_2025_${D}.csv"
-
-          echo "⬆️  Subiendo copia temporal: $TMP"
-          curl --fail --ssl-reqd --ftp-create-dirs --disable-epsv --ftp-skip-pasv-ip \
-               --quote "TYPE I" --quote "PBSZ 0" --quote "PROT P" \
+          BASE="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/Calendar"
+          curl --fail --ssl-reqd --disable-epsv --ftp-skip-pasv-ip \
                --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
-               --upload-file "$SRC" "$TMP"
-
-          echo "🔁 Renombrando copia…"
-          curl --fail --ssl-reqd \
-               --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
-               --quote "RNFR ${FULL_DIR}/eventos_agility_2025_${D}.csv.part" \
-               --quote "RNTO ${FULL_DIR}/eventos_agility_2025_${D}.csv" \
-               "ftp://${FTP_SERVER}/"
+               --output remote.csv "${BASE}/eventos_agility_2025.csv"
+          sha256sum remote.csv | awk '{print $1}' > remote.sha256
+          diff -q local.sha256 remote.sha256
+          echo "Hash OK"
