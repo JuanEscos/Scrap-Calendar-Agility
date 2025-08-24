@@ -26,7 +26,9 @@ jobs:
           FTP_SERVER:     ${{ secrets.FTP_SERVER }}      # ej: agilitydivertidog.com
           FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}    # usuario FTP de tu hosting
           FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}    # contraseña FTP
+          local-dir: './Scrap-Calendar-Agility/'
           FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}  # ej: /www/NewWeb/Privado/Calendar
+          port: 21  # Add the port parameter
         run: |
           set -euo pipefail
           REMOTE="ftps://${FTP_SERVER}${FTP_REMOTE_DIR}/resultado.txt"
