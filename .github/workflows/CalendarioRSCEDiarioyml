@@ -1,0 +1,52 @@
+name: Calendario RSCE diario
+
+on:
+  schedule:
+    - cron: '5 4 * * *'   # 04:05 UTC
+  workflow_dispatch: {}
+
+jobs:
+  run_and_upload:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Ejecutar script que genera el CSV
+        run: |
+          python "./Calendario RSCE 25.08.22.py"
+          test -s "eventos_agility_2025.csv"
+          sha256sum eventos_agility_2025.csv | awk '{print $1}' > local.sha256
+
+      - name: Subir CSV por FTPS (TLS explícito en 21)
+        env:
+          FTP_SERVER:     ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
+          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}  # ej: /www/NewWeb/Privado/Calendar
+        run: |
+          set -euo pipefail
+          REMOTE="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/eventos_agility_2025.csv"
+          echo "➡ Subiendo a: $REMOTE"
+          curl --fail --ssl-reqd --ftp-create-dirs \
+               --user "$FTP_USERNAME:$FTP_PASSWORD" \
+               --upload-file "eventos_agility_2025.csv" "$REMOTE"
+
+      - name: Verificar remoto (descargar y comparar hash)
+        env:
+          FTP_SERVER:     ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
+          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
+        run: |
+          set -euo pipefail
+          REMOTE="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/eventos_agility_2025.csv"
+          curl --fail --ssl-reqd \
+               --user "$FTP_USERNAME:$FTP_PASSWORD" \
+               --output remote.csv "$REMOTE"
+          sha256sum remote.csv | awk '{print $1}' > remote.sha256
+          diff -q local.sha256 remote.sha256
+          echo "✅ Hash OK"
