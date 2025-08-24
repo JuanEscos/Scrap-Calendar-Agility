@@ -23,7 +23,7 @@ jobs:
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USERNAME }}
-          password: ${{ secrets.SSH_PRIVATE_KEY }}
+          password: ${{ secrets.SSH_PASSWORD }}
           source: 'resultado.txt'
           target: "/home/agilitydivertidog/www/NewWeb/Privado/Calendar/"
           overwrite: true
