@@ -63,42 +63,40 @@ jobs:
           echo "📂 Listando: $LIST_URL"
           curl --fail --ssl-reqd --user "${FTP_USERNAME}:${FTP_PASSWORD}" "$LIST_URL" -l || true
 
-      - name: Subir CSV por FTPS (TLS explícito en 21)
+      - name: Subir y verificar por FTPS (añadiendo /Calendar)
         env:
           FTP_SERVER:     ${{ secrets.FTP_SERVER }}
           FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
           FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
-          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}    # /www/NewWeb/Privado
-        run: |
-          set -euo pipefail
-          REMOTE="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/Calendar/eventos_agility_2025.csv"
-          echo "➡ Subiendo a: $REMOTE"
-          curl --fail --ssl-reqd --ftp-create-dirs \
-               --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
-               --upload-file "${{ steps.csv.outputs.csv_path }}" "$REMOTE"
-
-      - name: Verificar remoto (listar, descargar y comparar hash)
-        env:
-          FTP_SERVER:     ${{ secrets.FTP_SERVER }}
-          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
-          FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
-          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
+          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}   # /www/NewWeb/Privado
         run: |
           set -euo pipefail
           BASE="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/Calendar"
-          echo "📂 Listando tras subir: ${BASE}/"
+          FILE="eventos_agility_2025.csv"
+      
+          echo "📂 Listando antes de subir: ${BASE}/"
+          curl --fail --ssl-reqd --user "${FTP_USERNAME}:${FTP_PASSWORD}" "${BASE}/" -l || true
+      
+          echo "⬆️  Subiendo ${FILE} a ${BASE}/${FILE}"
+          curl --fail --ssl-reqd --ftp-create-dirs \
+               --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
+               --upload-file "${{ steps.csv.outputs.csv_path }}" \
+               "${BASE}/${FILE}"
+      
+          echo "📂 Listando después de subir:"
           curl --fail --ssl-reqd --user "${FTP_USERNAME}:${FTP_PASSWORD}" "${BASE}/" -l
-
-          echo "⬇️  Descargando para verificar hash…"
+      
+          echo "⬇️  Descargando para comparar hash…"
           curl --fail --ssl-reqd \
                --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
-               --output remote.csv "${BASE}/eventos_agility_2025.csv"
-
+               --output remote.csv "${BASE}/${FILE}"
+      
           sha256sum remote.csv | awk '{print $1}' > remote.sha256
           echo "Local : $(cut -d' ' -f1 local.sha256)"
           echo "Remoto: $(cut -d' ' -f1 remote.sha256)"
           diff -q local.sha256 remote.sha256
           echo "✅ Hash OK"
+
 
       - name: Subir copia con fecha (AAAA-MM-DD) (opcional)
         if: always()
