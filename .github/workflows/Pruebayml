@@ -26,4 +26,5 @@ jobs:
           username: ${{ secrets.SERVER_USERNAME }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           source: 'resultado.txt'
-          target: '/ruta/a/la/carpeta/en/tu/servidor/'  # Change this to your actual server path
+          target: "/home/agilitydivertidog/www/NewWeb/Privado/Calendar/"
+          overwrite: true
