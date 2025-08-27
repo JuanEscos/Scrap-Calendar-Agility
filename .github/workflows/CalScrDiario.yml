@@ -74,9 +74,10 @@ jobs:
         run: |
           set -euo pipefail
           BASE="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/Calendar"
-          curl --fail --ssl-reqd --disable-epsv --ftp-skip-pasv-ip \
+          curl --fail --ssl-reqd --ftp-create-dirs \
                --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
-               --output remote.csv "${BASE}/eventos_agility_2025.csv"
+               --upload-file "${{ steps.csv.outputs.csv_path }}" \
+               "${BASE}/eventos_agility_2025.csv"
           sha256sum remote.csv | awk '{print $1}' > remote.sha256
           diff -q local.sha256 remote.sha256
           echo "Hash OK"
