@@ -27,15 +27,15 @@ jobs:
 
       - name: Ejecutar script que genera el CSV
         run: |
-          python "./Calendario RSCE 25.08.22.py"
+          python "./eventosprox.py"
 
       - name: Localizar CSV y calcular hash
         id: csv
         run: |
           set -euo pipefail
-          CSV_PATH="$(find . -type f -name 'eventos_agility_2025.csv' -print -quit)"
+          CSV_PATH="$(find . -type f -name 'events.json' -print -quit)"
           if [ -z "$CSV_PATH" ]; then
-            echo 'No se encontró eventos_agility_2025.csv'; exit 1
+            echo 'No se encontró events.json'; exit 1
           fi
           echo "csv_path=$CSV_PATH" >> "$GITHUB_OUTPUT"
           sha256sum "$CSV_PATH" | awk '{print $1}' > local.sha256
@@ -76,7 +76,7 @@ jobs:
           BASE="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/Competiciones/ListadoEventos"
           curl --fail --ssl-reqd --disable-epsv --ftp-skip-pasv-ip \
                --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
-               --output remote.csv "${BASE}/eventos_agility_2025.csv"
+               --output remote.csv "${BASE}/events.json"
           sha256sum remote.csv | awk '{print $1}' > remote.sha256
           diff -q local.sha256 remote.sha256
           echo "Hash OK"
