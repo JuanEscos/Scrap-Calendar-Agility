@@ -17,47 +17,45 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: 'pip'
+          cache: pip
           cache-dependency-path: requirements.txt
 
       - name: Instalar dependencias (si existe requirements.txt)
         run: |
+          set -euo pipefail
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      - name: Ejecutar script que genera el CSV
-        run: |
-          python "./eventosprox.py"
-
-      - name: Localizar CSV y calcular hash
-        id: csv
+      - name: Ejecutar script que genera el JSON
         run: |
           set -euo pipefail
-          CSV_PATH="$(find . -type f -name 'events.json' -print -quit)"
-          if [ -z "$CSV_PATH" ]; then
-            echo 'No se encontró events.json'; exit 1
+          python "./eventosprox.py"   # <-- ajusta el nombre si tu script es distinto
+
+      - name: Localizar JSON y calcular hash
+        id: out
+        run: |
+          set -euo pipefail
+          FILE_PATH="$(find . -type f -name 'events.json' -print -quit)"
+          if [ -z "$FILE_PATH" ]; then
+            echo "::error::No se encontró events.json"; exit 1
           fi
-          echo "csv_path=$CSV_PATH" >> "$GITHUB_OUTPUT"
-          sha256sum "$CSV_PATH" | awk '{print $1}' > local.sha256
-     - name: Comprobar que el CSV local existe
-          if: ${{ steps.find.outputs.artifact_name == 'eventos_prox.json' && steps.hasftp.outputs.ok == 'true' }}
-       run: |
-         set -euo pipefail
-         test -f "${{ steps.find.outputs.artifact_path }}" || { echo "::error::No existe el CSV en la ruta indicada"; exit 1; }
-         ls -l "${{ steps.find.outputs.artifact_path }}"
+          echo "file_path=$FILE_PATH" >> "$GITHUB_OUTPUT"
+          sha256sum "$FILE_PATH" | awk '{print $1}' > local.sha256
+          echo "local_hash=$(cut -d' ' -f1 local.sha256)" >> "$GITHUB_OUTPUT"
 
       - name: Listar carpeta remota (antes de subir)
         env:
           FTP_SERVER:     ${{ secrets.FTP_SERVER }}
           FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
           FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
-          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}   # /www/NewWeb/Privado
+          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}   # ej: /www/NewWeb/Privado
         run: |
           set -euo pipefail
           BASE="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/Competiciones/ListadoEventos"
+          echo "Listando: ${BASE}/"
           curl --fail --ssl-reqd --user "${FTP_USERNAME}:${FTP_PASSWORD}" "${BASE}/" -l || true
 
-      - name: Subir CSV por FTPS (TLS explícito en 21)
+      - name: Subir JSON por FTPS (TLS explicito en 21)
         env:
           FTP_SERVER:     ${{ secrets.FTP_SERVER }}
           FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
@@ -65,10 +63,15 @@ jobs:
           FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
         run: |
           set -euo pipefail
+          FILE="${{ steps.out.outputs.file_path }}"
+          if [ ! -f "$FILE" ]; then
+            echo "::error::El fichero local no existe: $FILE"; exit 1
+          fi
           BASE="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/Competiciones/ListadoEventos"
+          echo "Subiendo: $FILE -> ${BASE}/events.json"
           curl --fail --ssl-reqd --ftp-create-dirs --disable-epsv --ftp-skip-pasv-ip \
                --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
-               --upload-file "${{ steps.csv.outputs.csv_path }}" \
+               --upload-file "$FILE" \
                "${BASE}/events.json"
 
       - name: Verificar remoto (descargar y comparar hash)
@@ -80,9 +83,13 @@ jobs:
         run: |
           set -euo pipefail
           BASE="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/Competiciones/ListadoEventos"
+          echo "Descargando: ${BASE}/events.json"
           curl --fail --ssl-reqd --disable-epsv --ftp-skip-pasv-ip \
                --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
-               --output remote.csv "${BASE}/events.json"
-          sha256sum remote.csv | awk '{print $1}' > remote.sha256
+               --output remote.json "${BASE}/events.json"
+
+          sha256sum remote.json | awk '{print $1}' > remote.sha256
+          echo "Hash local : ${{ steps.out.outputs.local_hash }}"
+          echo "Hash remoto: $(cut -d' ' -f1 remote.sha256)"
           diff -q local.sha256 remote.sha256
-          echo "Hash OK"
+          echo "OK: hash coincide"
