@@ -39,6 +39,12 @@ jobs:
           fi
           echo "csv_path=$CSV_PATH" >> "$GITHUB_OUTPUT"
           sha256sum "$CSV_PATH" | awk '{print $1}' > local.sha256
+     - name: Comprobar que el CSV local existe
+          if: ${{ steps.find.outputs.artifact_name == 'eventos_prox.json' && steps.hasftp.outputs.ok == 'true' }}
+       run: |
+         set -euo pipefail
+         test -f "${{ steps.find.outputs.artifact_path }}" || { echo "::error::No existe el CSV en la ruta indicada"; exit 1; }
+         ls -l "${{ steps.find.outputs.artifact_path }}"
 
       - name: Listar carpeta remota (antes de subir)
         env:
@@ -63,7 +69,7 @@ jobs:
           curl --fail --ssl-reqd --ftp-create-dirs --disable-epsv --ftp-skip-pasv-ip \
                --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
                --upload-file "${{ steps.csv.outputs.csv_path }}" \
-               "${BASE}/eventos_agility_2025.csv"
+               "${BASE}/events.json"
 
       - name: Verificar remoto (descargar y comparar hash)
         env:
