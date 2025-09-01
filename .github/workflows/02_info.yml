@@ -1,0 +1,42 @@
+name: 02 - INFO desde 01events
+
+on:
+  workflow_run:
+    workflows: ["01 - Eventos Prox (JSON base)"]
+    types: [completed]
+
+jobs:
+  produce_02info:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    env:
+      TZ: Europe/Madrid
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Descargar artefacto 01events
+        uses: actions/download-artifact@v4
+        with:
+          name: a01-01events-json
+          path: ./artifacts
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Ejecutar 02_eventosproxINFO.py
+        run: |
+          mkdir -p output
+          python "./02_eventosproxINFO.py" "./artifacts/01events.json" "./output/02competiciones_detalladas.json"
+
+      - name: Subir artefacto 02info
+        uses: actions/upload-artifact@v4
+        with:
+          name: a02-02info-json
+          path: ./output/02competiciones_detalladas.json
+          if-no-files-found: error
+          retention-days: 7
