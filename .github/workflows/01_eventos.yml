@@ -2,7 +2,7 @@ name: 01 - Eventos Prox (JSON base)
 
 on:
   schedule:
-    - cron: '1 4 * * *'   # 04:01 UTC
+    - cron: '1 4 * * *'
   workflow_dispatch: {}
 
 jobs:
@@ -13,6 +13,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Depuración: ver estructura y rama
+      - name: Mostrar árbol del repo y rama
+        run: |
+          echo "BRANCH: $GITHUB_REF_NAME"
+          git ls-files | sed 's/^/ - /' | head -n 200
+          echo "----"
+          ls -la
+          echo "---- FIN LISTADO ----"
+
+      # Instalar Python + deps
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -23,16 +33,37 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          mkdir -p output
+          # por si no estuviera en requirements.txt:
+          pip install beautifulsoup4 selenium webdriver-manager
 
-      - name: Ejecutar 01_eventsProx.py
+      # Instalar Google Chrome para Selenium
+      - name: Setup Chrome
+        uses: browser-actions/setup-chrome@v1
+      - name: Comprobar Chrome
         run: |
-          python "./01_eventosprox.py"  # genera ./output/01events.json
+          which google-chrome
+          google-chrome --version || true
+
+      # Localizar y ejecutar el script (esté en raíz o subcarpeta)
+      - name: Ejecutar 01_eventosprox.py
+        id: run01
+        run: |
+          set -euo pipefail
+          mkdir -p output
+          SCRIPT_PATH="$(find . -maxdepth 3 -type f -name '01_eventosprox.py' -print -quit)"
+          if [ -z "${SCRIPT_PATH:-}" ]; then
+            echo "::error::No se encontró 01_eventosprox.py en el repo"; exit 1
+          fi
+          echo "Usando script: $SCRIPT_PATH"
+          python "$SCRIPT_PATH"
+          test -f ./output/events.json || { echo "::error::No se generó ./output/events.json"; exit 1; }
+          # Renombrar a 01events.json como salida estándar
+          mv -f ./output/events.json ./output/01events.json
 
       - name: Verificar salida
         run: |
-          test -f ./output/01events.json
           ls -lh ./output
+          jq 'length' ./output/01events.json || true
 
       - name: Subir artefacto 01events
         uses: actions/upload-artifact@v4
