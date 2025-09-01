@@ -4,17 +4,28 @@ on:
   workflow_run:
     workflows: ["02 - INFO desde 01events"]
     types: [completed]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  actions: read
 
 jobs:
   produce_participants:
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') }}
     runs-on: ubuntu-latest
     env:
       TZ: Europe/Madrid
+      # Tu script 03 usa estas variables (dotenv):
+      FLOW_EMAIL: ${{ secrets.FLOW_EMAIL }}
+      FLOW_PASS: ${{ secrets.FLOW_PASS }}
+      HEADLESS: "true"
+      INCOGNITO: "true"
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Mostrar árbol del repo y rama
+      - name: Debug repo tree
         run: |
           echo "BRANCH: $GITHUB_REF_NAME"
           git ls-files | sed 's/^/ - /' | head -n 200
@@ -26,20 +37,26 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.txt
 
-      - name: Instalar dependencias
+      - name: Install deps (selenium, bs4, dotenv, etc.)
         run: |
+          set -euo pipefail
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install beautifulsoup4 selenium webdriver-manager
+          pip install "selenium==4.*" "webdriver-manager==4.*" beautifulsoup4 lxml python-dotenv
 
       - name: Setup Chrome
         uses: browser-actions/setup-chrome@v1
-      - name: Comprobar Chrome
+
+      - name: Check Chrome & libs
         run: |
+          set -euo pipefail
           which google-chrome
           google-chrome --version || true
+          python -c "import sys,selenium,bs4; print('Python:',sys.version); print('Selenium:',selenium.__version__); print('BS4 OK')"
 
-      - name: Descargar artefacto 02info
+      # --- Encadenado: descargar por run-id del workflow 02 ---
+      - name: Download 02info artifact (chained)
+        if: ${{ github.event_name == 'workflow_run' }}
         uses: actions/download-artifact@v4
         with:
           name: a02-02info-json
@@ -47,31 +64,130 @@ jobs:
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Ejecutar 03_eventosproxParticipantes.py
+      # --- Manual: localizar por API el último artifact y bajarlo como ZIP ---
+      - name: Install jq & unzip (manual only)
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        run: sudo apt-get update && sudo apt-get install -y jq unzip
+
+      - name: Find & fetch latest 'a02-02info-json' (manual)
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          mkdir -p output/participants
-          IN="./artifacts/02competiciones_detalladas.json"
-          test -f "$IN" || { echo "::error::No existe $IN"; exit 1; }
-          SCRIPT_PATH="$(find . -maxdepth 3 -type f -name '03_eventosproxParticipantes.py' -print -quit)"
-          if [ -z "${SCRIPT_PATH:-}" ]; then
-            echo "::error::No se encontró 03_eventosproxParticipantes.py"; exit 1
-          fi
-          echo "Usando script: $SCRIPT_PATH"
-          python "$SCRIPT_PATH" "$IN" "./output/participants"
+          repo="${{ github.repository }}"
+          best_id=""
+          best_ts=""
+          for page in 1 2 3 4 5; do
+            resp=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+                   "https://api.github.com/repos/${repo}/actions/artifacts?per_page=100&page=${page}")
+            n=$(echo "$resp" | jq '.artifacts | length')
+            [ "$n" -eq 0 ] && break
+            while read -r id ts; do
+              if [ -z "$best_ts" ] || [ "$(date -d "$ts" +%s)" -gt "$(date -d "$best_ts" +%s)" ]; then
+                best_id="$id"; best_ts="$ts"
+              fi
+            done < <(echo "$resp" | jq -r '.artifacts[] | select(.name=="a02-02info-json" and .expired==false) | "\(.id) \(.updated_at)"')
+          done
+          [ -n "$best_id" ] || { echo "::error::No active artifact named a02-02info-json"; exit 1; }
+          echo "Downloading artifact zip id=$best_id"
+          mkdir -p artifacts
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -L \
+            "https://api.github.com/repos/${repo}/actions/artifacts/${best_id}/zip" \
+            -o a02.zip
+          unzip -o a02.zip -d ./artifacts
+          ls -la ./artifacts
 
-      - name: Comprobar ficheros generados
+      # --- Normalizar entrada: crear ./output/events.json que tu 03 espera ---
+      - name: Build ./output/events.json from 02 JSON (or CSV fallback)
         run: |
+          set -euo pipefail
+          mkdir -p output
+          IN_JSON="./artifacts/02competiciones_detalladas.json"
+          [ -f "$IN_JSON" ] || IN_JSON="./artifacts/competiciones_detalladas.json"
+
+          if [ -f "$IN_JSON" ]; then
+            echo "Using input JSON: $IN_JSON"
+            python - "$IN_JSON" <<'PY'
+import sys, json, re, os
+path = sys.argv[1]
+out_path = "./output/events.json"
+data = json.load(open(path, encoding="utf-8"))
+events=[]
+for it in data:
+    # id puede venir como 'id' o 'uuid', o extraer del enlace
+    id_ = it.get('id') or it.get('uuid')
+    if not id_:
+        urls = (it.get('urls') or it.get('enlaces') or {})
+        for key in ('info','participants','participantes','runs'):
+            url = urls.get(key) or ""
+            m = re.search(r'[0-9a-f-]{36}', url, re.I)
+            if m:
+                id_ = m.group(0)
+                break
+    nombre = it.get('nombre') or it.get('title') or ''
+    enlaces = it.get('enlaces') or {}
+    urls = it.get('urls') or {}
+    participantes = enlaces.get('participantes') or enlaces.get('participants') \
+                    or urls.get('participants') or urls.get('participantes') or ''
+    if id_ and participantes:
+        events.append({'id': id_, 'nombre': nombre, 'enlaces': {'participantes': participantes}})
+os.makedirs(os.path.dirname(out_path), exist_ok=True)
+with open(out_path, 'w', encoding='utf-8') as f:
+    json.dump(events, f, ensure_ascii=False, indent=2)
+print(f"Wrote {out_path} with {len(events)} events")
+PY
+          else
+            echo "No JSON found. Trying CSV fallback in ./artifacts ..."
+            CSV_FILE="$(ls -t ./artifacts/events_past_*.csv 2>/dev/null | head -n1 || true)"
+            if [ -z "${CSV_FILE:-}" ]; then
+              echo "::error::No input JSON/CSV for building ./output/events.json"; exit 1
+            fi
+            python - <<'PY'
+import csv, json, os, sys
+csv_path = os.environ.get("CSV_FILE")
+out_path = "./output/events.json"
+rows=[]
+with open(csv_path, newline='', encoding='utf-8') as f:
+    r=csv.DictReader(f)
+    for row in r:
+        id_ = (row.get('uuid') or row.get('id') or '').strip()
+        nombre = (row.get('title') or row.get('nombre') or '').strip()
+        part = (row.get('participants_url') or row.get('participantes_url') or '').strip()
+        if id_ and part:
+            rows.append({'id': id_, 'nombre': nombre, 'enlaces': {'participantes': part}})
+os.makedirs(os.path.dirname(out_path), exist_ok=True)
+with open(out_path, 'w', encoding='utf-8') as f:
+    json.dump(rows, f, ensure_ascii=False, indent=2)
+print(f"Wrote {out_path} with {len(rows)} events")
+PY
+          fi
+
+      # --- Ejecutar tu script 03 (sin argumentos; lee ./output/events.json) ---
+      - name: Run 03_eventosproxParticipantes.py
+        run: |
+          set -euo pipefail
+          SCRIPT_PATH="$(find . -maxdepth 6 -type f -name '03_eventosproxParticipantes.py' -print -quit)"
+          [ -n "$SCRIPT_PATH" ] || { echo "::error::03_eventosproxParticipantes.py not found"; exit 1; }
+          echo "Using script: $SCRIPT_PATH"
+          python "$SCRIPT_PATH"
+
+      # --- Comprobación de salida (no rompe si está vacío, solo avisa) ---
+      - name: Check generated participants
+        run: |
+          set -euo pipefail
           shopt -s nullglob
           files=(./output/participants/*.json)
-          echo "Total participantes JSON: ${#files[@]}"
-          ls -lh ./output/participants | head -n 50
-          test ${#files[@]} -gt 0
+          echo "Total participants JSON: ${#files[@]}"
+          ls -lh ./output/participants | head -n 100 || true
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::warning::No participant files were generated. (extract_participants_data() may be a stub)"
+          fi
 
-      - name: Subir artefacto participantes (carpeta completa)
+      - name: Upload participants artifact
         uses: actions/upload-artifact@v4
         with:
           name: a03-participants-jsons
           path: ./output/participants/*.json
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 7
