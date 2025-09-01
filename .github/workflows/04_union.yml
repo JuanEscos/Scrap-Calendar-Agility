@@ -1,4 +1,4 @@
-name: 04 - Union participantes
+name: 4 - Union participantes
 
 on:
   workflow_run:
@@ -30,18 +30,70 @@ jobs:
 
       - name: Ejecutar 04_eventosproxUnion.py
         run: |
+          set -euo pipefail
           mkdir -p output
           python "./04_eventosproxUnion.py" "./participants_jsons" "./output/participants_completos_final.json"
 
       - name: Verificar resultado final
         run: |
+          set -euo pipefail
           ls -lh ./output
           test -f ./output/participants_completos_final.json
+          sha256sum ./output/participants_completos_final.json | awk '{print $1}' > local.sha256
+          echo "Hash local: $(cat local.sha256)"
 
-      - name: Subir artefacto final
-        uses: actions/upload-artifact@v4
-        with:
-          name: a04-participantes-final
-          path: ./output/participants_completos_final.json
-          if-no-files-found: error
-          retention-days: 14
+      - name: (FTPS) Listar carpeta remota antes de subir
+        env:
+          FTP_SERVER:     ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
+          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
+        run: |
+          set -euo pipefail
+          BASE="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/Competiciones/ListadoParticipantes"
+          echo "Listando: ${BASE}/"
+          curl --fail --ssl-reqd --user "${FTP_USERNAME}:${FTP_PASSWORD}" "${BASE}/" -l || true
+
+      - name: (FTPS) Subir JSON final (fijo + copia con timestamp)
+        env:
+          FTP_SERVER:     ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
+          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
+        run: |
+          set -euo pipefail
+          FILE="./output/participants_completos_final.json"
+          [ -f "$FILE" ] || { echo "::error::No existe $FILE"; exit 1; }
+
+          BASE="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/Competiciones/ListadoParticipantes"
+          TS="$(date -u +'%Y%m%dT%H%M%SZ')"
+
+          echo "Subiendo (nombre fijo): ${BASE}/participants_completos_final.json"
+          curl --fail --ssl-reqd --ftp-create-dirs --disable-epsv --ftp-skip-pasv-ip \
+               --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
+               --upload-file "$FILE" \
+               "${BASE}/participants_completos_final.json"
+
+          echo "Subiendo (backup con timestamp): ${BASE}/participants_completos_final_${TS}.json"
+          curl --fail --ssl-reqd --ftp-create-dirs --disable-epsv --ftp-skip-pasv-ip \
+               --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
+               --upload-file "$FILE" \
+               "${BASE}/participants_completos_final_${TS}.json"
+
+      - name: (FTPS) Verificar remoto (descargar y comparar hash)
+        env:
+          FTP_SERVER:     ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
+          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
+        run: |
+          set -euo pipefail
+          BASE="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/Competiciones/ListadoParticipantes"
+          echo "Descargando para verificación: ${BASE}/participants_completos_final.json"
+          curl --fail --ssl-reqd --disable-epsv --ftp-skip-pasv-ip \
+               --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
+               --output remote.json "${BASE}/participants_completos_final.json"
+
+          sha256sum remote.json | awk '{print $1}' > remote.sha256
+          echo "Hash remoto: $(cat remote.sha256)"
+          diff -q local.sha256 remote.sha256 && echo "OK: hash coincide"
