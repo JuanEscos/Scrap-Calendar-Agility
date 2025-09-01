@@ -49,7 +49,7 @@ jobs:
           google-chrome --version || true
           python -c "import sys,selenium,bs4; print('Python:',sys.version); print('Selenium:',selenium.__version__); print('BS4 OK')"
 
-      # Encadenado: baja el artifact exacto del run 01
+      # --- Encadenado: descargar por run-id del workflow 01 ---
       - name: Descargar artefacto 01events (modo encadenado)
         if: ${{ github.event_name == 'workflow_run' }}
         uses: actions/download-artifact@v4
@@ -59,45 +59,42 @@ jobs:
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      # Manual: localizar por API el último artifact activo y bajarlo por ID
-      - name: Instalar jq
+      # --- Manual: localizar por API el último artifact y bajarlo como ZIP ---
+      - name: Instalar jq y unzip (solo manual)
         if: ${{ github.event_name == 'workflow_dispatch' }}
-        run: sudo apt-get update && sudo apt-get install -y jq
+        run: sudo apt-get update && sudo apt-get install -y jq unzip
 
-      - name: Buscar último artifact 'a01-01events-json' (manual)
+      - name: Buscar y descargar último 'a01-01events-json' (manual)
         if: ${{ github.event_name == 'workflow_dispatch' }}
-        id: find_art
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           repo="${{ github.repository }}"
+
           best_id=""
           best_ts=""
           for page in 1 2 3 4 5; do
             resp=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
                    "https://api.github.com/repos/${repo}/actions/artifacts?per_page=100&page=${page}")
-            count=$(echo "$resp" | jq '.artifacts | length')
-            [ "$count" -eq 0 ] && break
+            n=$(echo "$resp" | jq '.artifacts | length')
+            [ "$n" -eq 0 ] && break
             while read -r id ts; do
               if [ -z "$best_ts" ] || [ "$(date -d "$ts" +%s)" -gt "$(date -d "$best_ts" +%s)" ]; then
                 best_id="$id"; best_ts="$ts"
               fi
             done < <(echo "$resp" | jq -r '.artifacts[] | select(.name=="a01-01events-json" and .expired==false) | "\(.id) \(.updated_at)"')
           done
-          if [ -z "$best_id" ]; then
-            echo "::error::No se encontró artifact activo llamado a01-01events-json"; exit 1
-          fi
-          echo "artifact_id=$best_id" >> "$GITHUB_OUTPUT"
-          echo "Último artifact id: $best_id @ $best_ts"
 
-      - name: Descargar artifact por ID (manual)
-        if: ${{ github.event_name == 'workflow_dispatch' }}
-        uses: actions/download-artifact@v4
-        with:
-          artifact-ids: ${{ steps.find_art.outputs.artifact_id }}
-          path: ./artifacts
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          [ -n "$best_id" ] || { echo "::error::No se encontró artifact activo llamado a01-01events-json"; exit 1; }
+
+          echo "Descargando ZIP de artifact id=$best_id"
+          mkdir -p artifacts
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -L \
+            "https://api.github.com/repos/${repo}/actions/artifacts/${best_id}/zip" \
+            -o artifacts.zip
+          unzip -o artifacts.zip -d ./artifacts
+          ls -la ./artifacts
 
       - name: Ejecutar 02_eventosproxINFO.py
         run: |
