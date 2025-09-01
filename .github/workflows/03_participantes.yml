@@ -14,11 +14,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Mostrar árbol del repo y rama
+        run: |
+          echo "BRANCH: $GITHUB_REF_NAME"
+          git ls-files | sed 's/^/ - /' | head -n 200
+          echo "----"; ls -la; echo "---- FIN LISTADO ----"
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: pip
           cache-dependency-path: requirements.txt
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install beautifulsoup4 selenium webdriver-manager
+
+      - name: Setup Chrome
+        uses: browser-actions/setup-chrome@v1
+      - name: Comprobar Chrome
+        run: |
+          which google-chrome
+          google-chrome --version || true
 
       - name: Descargar artefacto 02info
         uses: actions/download-artifact@v4
@@ -30,21 +49,29 @@ jobs:
 
       - name: Ejecutar 03_eventosproxParticipantes.py
         run: |
+          set -euo pipefail
           mkdir -p output/participants
-          python "./03_eventosproxParticipantes.py" "./artifacts/02competiciones_detalladas.json" "./output/participants"
+          IN="./artifacts/02competiciones_detalladas.json"
+          test -f "$IN" || { echo "::error::No existe $IN"; exit 1; }
+          SCRIPT_PATH="$(find . -maxdepth 3 -type f -name '03_eventosproxParticipantes.py' -print -quit)"
+          if [ -z "${SCRIPT_PATH:-}" ]; then
+            echo "::error::No se encontró 03_eventosproxParticipantes.py"; exit 1
+          fi
+          echo "Usando script: $SCRIPT_PATH"
+          python "$SCRIPT_PATH" "$IN" "./output/participants"
 
       - name: Comprobar ficheros generados
         run: |
           shopt -s nullglob
-          count=(./output/participants/*.json)
-          echo "Total participantes JSON: ${#count[@]}"
-          test ${#count[@]} -gt 0
+          files=(./output/participants/*.json)
+          echo "Total participantes JSON: ${#files[@]}"
+          ls -lh ./output/participants | head -n 50
+          test ${#files[@]} -gt 0
 
       - name: Subir artefacto participantes (carpeta completa)
         uses: actions/upload-artifact@v4
         with:
           name: a03-participants-jsons
-          path: |
-            ./output/participants/*.json
+          path: ./output/participants/*.json
           if-no-files-found: error
           retention-days: 7
