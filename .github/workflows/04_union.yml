@@ -2,7 +2,7 @@ name: 04 - Union participantes
 
 on:
   workflow_run:
-    workflows: ["3 - Participantes por evento"]
+    workflows: ["03 - Participantes por evento"]
     types: [completed]
 
 jobs:
