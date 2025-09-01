@@ -29,7 +29,7 @@ jobs:
       - name: Ejecutar script que genera el JSON
         run: |
           set -euo pipefail
-          python "./01_eventsProx.py"   # <-- ajusta el nombre si tu script es distinto
+          python "./02_eventosproxINFO.py"   # <-- ajusta el nombre si tu script es distinto
 
       - name: Localizar JSON y calcular hash
         id: out
