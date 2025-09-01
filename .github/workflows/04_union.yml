@@ -2,12 +2,17 @@ name: 04 - Union participantes
 
 on:
   workflow_run:
-    workflows: ["03 - Participantes por evento"]
+    workflows: ["3 - Participantes por evento"]
     types: [completed]
+  workflow_dispatch: {}
+
+concurrency:
+  group: participantes-union
+  cancel-in-progress: true
 
 jobs:
   union_participants:
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') }}
     runs-on: ubuntu-latest
     env:
       TZ: Europe/Madrid
@@ -20,7 +25,9 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.txt
 
-      - name: Descargar artefacto con todos los participantes
+      # --- Descarga artefactos ---
+      - name: Descargar artefacto (modo encadenado workflow_run)
+        if: ${{ github.event_name == 'workflow_run' }}
         uses: actions/download-artifact@v4
         with:
           name: a03-participants-jsons
@@ -28,6 +35,17 @@ jobs:
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Descargar artefacto más reciente (modo manual)
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: a03-participants-jsons
+          path: ./participants_jsons
+          workflow: "3 - Participantes por evento"
+          branch: main
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # --- Unión ---
       - name: Ejecutar 04_eventosproxUnion.py
         run: |
           set -euo pipefail
@@ -42,6 +60,7 @@ jobs:
           sha256sum ./output/participants_completos_final.json | awk '{print $1}' > local.sha256
           echo "Hash local: $(cat local.sha256)"
 
+      # --- FTPS: listar, subir (fijo + timestamp), verificar ---
       - name: (FTPS) Listar carpeta remota antes de subir
         env:
           FTP_SERVER:     ${{ secrets.FTP_SERVER }}
@@ -54,7 +73,7 @@ jobs:
           echo "Listando: ${BASE}/"
           curl --fail --ssl-reqd --user "${FTP_USERNAME}:${FTP_PASSWORD}" "${BASE}/" -l || true
 
-      - name: (FTPS) Subir JSON final (fijo + copia con timestamp)
+      - name: (FTPS) Subir JSON final (fijo + backup con timestamp)
         env:
           FTP_SERVER:     ${{ secrets.FTP_SERVER }}
           FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
