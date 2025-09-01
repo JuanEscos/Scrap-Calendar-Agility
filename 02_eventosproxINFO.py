@@ -1,394 +1,233 @@
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-02_eventosproxINFO.py
----------------------
-Enriquece la lista de eventos con detalles por UUID a partir del JSON del paso 01.
-
-Uso:
-  python 02_eventosproxINFO.py [ruta_01events.json] [ruta_salida_detallada.json]
-
-Entradas:
-  - ruta_01events.json (opcional): JSON del workflow 01 con la lista base de eventos.
-    Si no se pasa, el script intentará extraer UUIDs de la página de eventos directamente.
-
-Salidas:
-  - JSON enriquecido: por defecto ./output/02competiciones_detalladas.json (o el 2º argumento).
-  - CSV compat: ./Results/events_past_YYYY-MM-DD.csv (para mantener pipelines existentes).
-
-Requisitos:
-  pip install selenium webdriver-manager beautifulsoup4 lxml
-
-Variables de entorno:
-  FLOW_USER_EMAIL, FLOW_USER_PASSWORD
-  HEADLESS=true|false (default: true)
-  INCOGNITO=true|false (default: true)
-  BASE=https://www.flowagility.com (por si cambia)
+02_eventosproxINFO.py (adaptado para GitHub Actions)
+- Evita chdir a Windows en Linux
+- Credenciales vía variables de entorno
+- HEADLESS configurable con env
+- Soporta argumentos: [input_json] [output_json]
 """
 
-import os
-import re
-import sys
-import csv
-import json
-import time
-import datetime as dt
+import os, json, time, re, sys
 from urllib.parse import urljoin
+from bs4 import BeautifulSoup
 
-# ---------------------------
-# Configuración (env + defaults)
-# ---------------------------
-BASE = os.getenv("BASE", "https://www.flowagility.com")
-FLOW_EMAIL = os.getenv("FLOW_USER_EMAIL") or os.getenv("FLOW_EMAIL") or ""
-FLOW_PASS  = os.getenv("FLOW_USER_PASSWORD") or os.getenv("FLOW_PASS") or ""
-HEADLESS   = (os.getenv("HEADLESS", "true").lower() == "true")
-INCOGNITO  = (os.getenv("INCOGNITO", "true").lower() == "true")
+# === Paths ===
+BASE = "https://www.flowagility.com"
+OUT_DIR = "./output"
+COMPETITIONS_FILE = os.path.join(OUT_DIR, 'competiciones_agility.json')
+DETAILED_FILE = os.path.join(OUT_DIR, 'competiciones_detalladas.json')
 
-OUT_DIR      = "./output"
-RESULTS_DIR  = "./Results"
-DEFAULT_OUT  = os.path.join(OUT_DIR, "02competiciones_detalladas.json")
-EVENTS_URL   = f"{BASE}/zone/events"
+os.makedirs(OUT_DIR, exist_ok=True)
 
-UUID_RE = re.compile(r"([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})", re.I)
+# Evitar chdir roto en Linux
+parent_dir = r"c:\Jescos 25.07.07\Agility\Pythonscrap\ListaEventos"
+try:
+    if os.name == "nt" and os.path.isdir(parent_dir):
+        os.chdir(parent_dir)
+except Exception:
+    pass
 
-# ---------------------------
-# Utils
-# ---------------------------
-def log(msg):  # log con hora
-    print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
+def log(m): print(f"[{time.strftime('%H:%M:%S')}] {m}", flush=True)
+def slow_pause(a=1, b=2):
+    import random, time as _t
+    _t.sleep(random.uniform(a, b))
 
-def sleep(a=0.2, b=0.6):  # pausa simple
-    time.sleep(max(a, b))
-
-def ensure_dirs():
-    os.makedirs(OUT_DIR, exist_ok=True)
-    os.makedirs(RESULTS_DIR, exist_ok=True)
-
-def today_str():
-    return dt.datetime.now().strftime("%Y-%m-%d")
-
-# ---------------------------
-# Selenium setup
-# ---------------------------
-def import_selenium():
+def _import_selenium():
     from selenium import webdriver
     from selenium.webdriver.common.by import By
     from selenium.webdriver.chrome.options import Options
     from selenium.webdriver.support.ui import WebDriverWait
     from selenium.webdriver.support import expected_conditions as EC
     from selenium.common.exceptions import (
-        JavascriptException, StaleElementReferenceException, NoSuchElementException,
-        ElementClickInterceptedException, TimeoutException, WebDriverException
+        TimeoutException, NoSuchElementException, WebDriverException
     )
     from selenium.webdriver.chrome.service import Service
-    return (webdriver, By, Options, WebDriverWait, EC, JavascriptException,
-            StaleElementReferenceException, NoSuchElementException,
-            ElementClickInterceptedException, TimeoutException, WebDriverException, Service)
+    return webdriver, By, Options, WebDriverWait, EC, TimeoutException, NoSuchElementException, WebDriverException, Service
 
-def get_driver():
-    (webdriver, By, Options, *_), Service = import_selenium()[:4], import_selenium()[-1]
+def _get_driver(headless=True):
+    webdriver, By, Options, *_rest = _import_selenium()
+    from selenium.webdriver.chrome.service import Service
     opts = Options()
-    if HEADLESS:  opts.add_argument("--headless=new")
-    if INCOGNITO: opts.add_argument("--incognito")
+    if headless: opts.add_argument("--headless=new")
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
     opts.add_argument("--window-size=1920,1080")
     opts.add_argument("--disable-blink-features=AutomationControlled")
-    opts.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                      "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36")
-    opts.add_argument("--disable-gpu")
-    opts.add_argument("--remote-debugging-port=9222")
-    opts.add_experimental_option("excludeSwitches", ["enable-automation"])
-    opts.add_experimental_option('useAutomationExtension', False)
-
-    # webdriver-manager
-    from webdriver_manager.chrome import ChromeDriverManager
-    service = Service(ChromeDriverManager().install())
-    return webdriver.Chrome(service=service, options=opts)
-
-# ---------------------------
-# Login + helpers
-# ---------------------------
-def accept_cookies(driver, By):
+    opts.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36")
     try:
-        for sel in (
-            '[data-testid="uc-accept-all-button"]',
-            'button[aria-label="Accept all"]',
-            'button[aria-label="Aceptar todo"]',
-            'button[mode="primary"]',
-        ):
-            btns = driver.find_elements(By.CSS_SELECTOR, sel)
-            if btns:
-                btns[0].click()
-                sleep(0.3, 0.6)
-                return
-        driver.execute_script("""
-            const b=[...document.querySelectorAll('button')]
-            .find(x=>/acept|accept|consent|de acuerdo/i.test(x.textContent));
-            if(b) b.click();
-        """)
-        sleep(0.2, 0.4)
-    except Exception:
-        pass
+        from webdriver_manager.chrome import ChromeDriverManager
+        service = Service(ChromeDriverManager().install())
+        return webdriver.Chrome(service=service, options=opts)
+    except ImportError:
+        log("webdriver_manager no instalado, usando ChromeDriver del sistema")
+        return webdriver.Chrome(options=opts)
 
-def login(driver, By, WebDriverWait, EC):
-    if not FLOW_EMAIL or not FLOW_PASS:
-        raise RuntimeError("Credenciales no encontradas. Define FLOW_USER_EMAIL y FLOW_USER_PASSWORD en el entorno.")
-    log("Login…")
+def _login(driver, By, WebDriverWait, EC):
+    """Login con credenciales desde ENV (fallback: valores hardcodeados si existen)"""
+    email_env = os.getenv("FLOW_USER_EMAIL") or "pilar1959suarez@gmail.com"
+    pass_env  = os.getenv("FLOW_USER_PASSWORD") or "Seattle1"
+    log("Iniciando login...")
     driver.get(f"{BASE}/user/login")
-    w = WebDriverWait(driver, 25)
-    email = w.until(EC.presence_of_element_located((By.NAME, "user[email]")))
+    wait = WebDriverWait(driver, 25)
+    email = wait.until(EC.presence_of_element_located((By.NAME, "user[email]")))
     pwd   = driver.find_element(By.NAME, "user[password]")
-    email.clear(); email.send_keys(FLOW_EMAIL); sleep(0.1, 0.2)
-    pwd.clear();   pwd.send_keys(FLOW_PASS);    sleep(0.1, 0.2)
+    email.clear(); email.send_keys(email_env); slow_pause(0.5, 1)
+    pwd.clear();   pwd.send_keys(pass_env);    slow_pause(0.5, 1)
     driver.find_element(By.CSS_SELECTOR, 'button[type="submit"]').click()
-    w.until(lambda d: "/user/login" not in d.current_url)
-    sleep(0.3, 0.6)
-    log("Login OK.")
+    wait.until(lambda d: "/user/login" not in d.current_url)
+    slow_pause(1.5, 2.5)
+    log("Login exitoso")
 
-def full_scroll(driver):
-    last_h = 0
-    for _ in range(16):
-        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        time.sleep(1.0)
-        h = driver.execute_script("return document.body.scrollHeight;")
-        if h == last_h:
-            break
-        last_h = h
-
-# ---------------------------
-# Parse helpers (BeautifulSoup)
-# ---------------------------
-from bs4 import BeautifulSoup
-
-def text_or(el):
-    return el.get_text(strip=True) if el else ""
-
-def parse_info_html(html):
-    """
-    Intenta extraer campos básicos del detalle del evento (página /info).
-    Devuelve dict con campos 'title', 'dates', 'organizer', 'club', 'place', etc.
-    """
-    soup = BeautifulSoup(html, "lxml")
-
-    def find_first(*selectors):
-        for sel in selectors:
-            el = soup.select_one(sel)
-            if el: return el
-        return None
-
-    title = text_or(find_first("h1", ".font-caption.text-lg", "h2"))
-    # fechas
-    dates = None
-    # varias zonas con 'text-xs' suelen contener fechas / organización
-    xs = soup.select(".text-xs")
-    if xs:
-        # heuristic: primera 'text-xs' con patrón de fecha
-        for div in xs:
-            t = div.get_text(" ", strip=True)
-            if any(k in t.lower() for k in ("202", "ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic", "jan", "feb", "apr", "aug", "sept", "oct", "nov", "dec", "-")):
-                dates = t
-                break
-
-    # club/organizador (heurístico)
-    organizer = None
-    club = None
-    # A veces el club aparece como siguiente .text-xs
-    if xs:
-        # coge un par de candidatos (ordena por longitud corta)
-        cands = [x.get_text(" ", strip=True) for x in xs]
-        if len(cands) >= 2:
-            organizer = cands[1]
-        if len(cands) >= 3:
-            club = cands[2]
-
-    # lugar
-    place = None
-    for div in xs:
-        t = div.get_text(" ", strip=True)
-        if "/" in t and any(x in t for x in ("Spain", "España", "Portugal", "France", "Andorra", "Italia")):
-            place = t
-            break
-
-    # jueces (si aparece grid o bloque de reglas)
-    judges = []
-    # buscar por keywords
-    for table in soup.find_all(["table", "div", "section"]):
-        txt = table.get_text(" ", strip=True)
-        if re.search(r"juez|jueces|judge", txt, re.I):
-            # intenta extraer nombres capitalizados separados por coma
-            parts = re.split(r"[:;\n]", txt)
-            for p in parts:
-                if re.search(r"juez|jueces|judge", p, re.I):
-                    # lo que siga pueden ser nombres
-                    continue
-                # filtro de nombres (heurístico)
-                if len(p.strip()) >= 3 and any(c.isalpha() for c in p):
-                    judges.extend([x.strip() for x in re.split(r",|·|\|", p) if x.strip()])
-    judges = sorted(list({j for j in judges if j and len(j) < 80}))[:8]  # dedup + corta
-
-    return {
-        "title": title or None,
-        "dates": dates or None,
-        "organizer": organizer or None,
-        "club": club or None,
-        "place": place or None,
-        "judges": judges or None
-    }
-
-def build_urls(uuid):
-    base = f"{BASE}/zone/event/{uuid}"
-    return {
-        "info": urljoin(base + "/", "info"),
-        "runs": urljoin(base + "/", "runs"),
-        "participants": urljoin(base + "/", "participants_list"),
-        "combined_results": urljoin(base + "/", "combined_results"),
-    }
-
-def extract_uuids_from_01json(path):
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    uuids = set()
-    def maybe_add(s):
-        if not s: return
-        m = UUID_RE.search(s)
-        if m: uuids.add(m.group(1).lower())
-
-    for item in data:
-        # enlaces
-        enlaces = item.get("enlaces") or {}
-        maybe_add(enlaces.get("info"))
-        maybe_add(enlaces.get("runs"))
-        maybe_add(enlaces.get("participantes"))
-        # id por si acaso fuera el uuid
-        maybe_add(item.get("id"))
-        # cualquier otro texto
-        for v in item.values():
-            if isinstance(v, str):
-                maybe_add(v)
-            elif isinstance(v, dict):
-                for vv in v.values():
-                    if isinstance(vv, str):
-                        maybe_add(vv)
-    return sorted(uuids)
-
-# ---------------------------
-# Main
-# ---------------------------
-def main():
-    ensure_dirs()
-    in_json  = sys.argv[1] if len(sys.argv) >= 2 else None
-    out_json = sys.argv[2] if len(sys.argv) >= 3 else DEFAULT_OUT
-
-    (webdriver, By, Options, WebDriverWait, EC, JavascriptException,
-     StaleElementReferenceException, NoSuchElementException,
-     ElementClickInterceptedException, TimeoutException, WebDriverException, Service) = import_selenium()
-
-    driver = get_driver()
+def extract_detailed_info(driver, info_url, event_base_info):
+    """Extrae información detallada desde la página /info del evento"""
     try:
-        log("—— INICIO PAST ——")
-        driver.get(BASE)
-        accept_cookies(driver, By)
-        login(driver, By, WebDriverWait, EC)
+        log(f"Accediendo a información detallada: {info_url}")
+        driver.get(info_url)
+        slow_pause(2, 3)
+        page_html = driver.page_source
+        soup = BeautifulSoup(page_html, 'html.parser')
 
-        # === preparar lista de UUIDs ===
-        if in_json and os.path.isfile(in_json):
-            uuids = extract_uuids_from_01json(in_json)
-        else:
-            # fallback: escanear /zone/events y sacar uuids de los enlaces
-            log("No se pasó JSON del paso 01; extrayendo UUIDs desde la página de eventos.")
-            driver.get(EVENTS_URL)
-            WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-            accept_cookies(driver, By)
-            full_scroll(driver)
-            html = driver.page_source
-            uuids = sorted(set(m.group(1).lower() for m in UUID_RE.finditer(html)))
+        detailed_info = event_base_info.copy()
 
-        log(f"UUIDs detectados: {len(uuids)}")
+        # ===== INFO GENERAL =====
+        general_info = {}
+        title_elem = soup.find('h1', class_=lambda x: x and 'text' in x.lower()) or soup.find('h1')
+        if title_elem:
+            general_info['titulo'] = title_elem.get_text(strip=True)
 
-        detailed = []
-        rows_csv = []
+        date_location_elems = soup.find_all('div', class_=lambda x: x and 'text' in x.lower())
+        for elem in date_location_elems:
+            text = elem.get_text(strip=True)
+            if ' - ' in text and len(text) < 60:
+                general_info['fechas_completas'] = text
+            elif any(w in text.lower() for w in ['spain', 'españa', 'madrid', 'barcelona']):
+                general_info['ubicacion_completa'] = text
 
-        for i, uid in enumerate(uuids, 1):
-            log(f"[{i}/{len(uuids)}] {uid} -> detalle")
-            urls = build_urls(uid)
-            ev = {
-                "uuid": uid,
-                "urls": urls,
-                "source": "02_eventosproxINFO.py",
-                "scraped_at": dt.datetime.now().isoformat(timespec="seconds")
-            }
+        # ===== INSCRIPCIÓN =====
+        registration_info = {}
+        registration_dates = soup.find_all('div', class_=lambda x: x and any(w in str(x).lower() for w in ['date', 'fecha', 'inscrip']))
+        for elem in registration_dates:
+            text = elem.get_text(strip=True)
+            if 'inscrip' in text.lower() or 'registration' in text.lower():
+                registration_info['periodo_inscripcion'] = text
 
-            # INFO page
-            try:
-                driver.get(urls["info"])
-                WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-                info_dict = parse_info_html(driver.page_source)
-                ev.update(info_dict)
-            except Exception as e:
-                ev.setdefault("errors", []).append(f"info_fail:{type(e).__name__}")
+        price_elems = soup.find_all(lambda tag: tag.name in ['div', 'span'] and any(w in tag.get_text().lower() for w in ['€', 'euro', 'precio', 'price', 'coste']))
+        for elem in price_elems:
+            text = elem.get_text(strip=True)
+            if '€' in text:
+                registration_info['precios'] = text
 
-            # RUNS page (opcional: marcar si existe)
-            try:
-                driver.get(urls["runs"])
-                WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-                # ejemplo de chequeo mínimo
-                ev["has_runs_page"] = True
-            except Exception:
-                ev["has_runs_page"] = False
+        # ===== PRUEBAS =====
+        pruebas_info = []
+        prueba_sections = soup.find_all(['div', 'section'], class_=lambda x: x and any(w in str(x).lower() for w in ['prueba', 'competition', 'event', 'round']))
+        for section in prueba_sections:
+            prueba = {}
+            name_elem = section.find(['h2', 'h3', 'h4', 'strong'])
+            if name_elem:
+                prueba['nombre'] = name_elem.get_text(strip=True)
+            time_elems = section.find_all(lambda tag: any(w in tag.get_text().lower() for w in ['hora', 'time', 'horario', 'schedule']))
+            for elem in time_elems:
+                prueba['horarios'] = elem.get_text(strip=True)
+            category_elems = section.find_all(lambda tag: any(w in tag.get_text().lower() for w in ['categor', 'level', 'nivel', 'class']))
+            for elem in category_elems:
+                prueba['categorias'] = elem.get_text(strip=True)
+            if prueba:
+                pruebas_info.append(prueba)
 
-            # PARTICIPANTS page (para que el 03 use el enlace)
-            try:
-                driver.get(urls["participants"])
-                WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-                ev["has_participants_page"] = True
-            except Exception:
-                ev["has_participants_page"] = False
+        # ===== CONTACTO =====
+        contact_info = {}
+        email_elems = soup.find_all(lambda tag: '@' in tag.get_text() and '.' in tag.get_text())
+        for elem in email_elems:
+            contact_info['email'] = elem.get_text(strip=True)
+        phone_elems = soup.find_all(lambda tag: any(w in tag.get_text() for w in ['+34', 'tel:', 'phone', 'tlf']))
+        for elem in phone_elems:
+            contact_info['telefono'] = elem.get_text(strip=True)
 
-            detailed.append(ev)
+        # ===== ENLACES ADICIONALES =====
+        additional_links = {}
+        reglamento_links = soup.find_all('a', href=lambda x: x and any(w in x.lower() for w in ['reglamento', 'regulation', 'normas', 'rules']))
+        for link in reglamento_links:
+            additional_links['reglamento'] = urljoin(BASE, link['href'])
+        mapa_links = soup.find_all('a', href=lambda x: x and any(w in x.lower() for w in ['map', 'ubicacion', 'location', 'google']))
+        for link in mapa_links:
+            additional_links['mapa'] = urljoin(BASE, link['href'])
 
-            # fila CSV compat
-            rows_csv.append({
-                "uuid": uid,
-                "title": ev.get("title") or "",
-                "dates": ev.get("dates") or "",
-                "organizer": ev.get("organizer") or "",
-                "club": ev.get("club") or "",
-                "place": ev.get("place") or "",
-                "participants_url": urls.get("participants") or "",
-                "runs_url": urls.get("runs") or "",
-                "info_url": urls.get("info") or "",
-            })
-
-        # === Guardar JSON enriquecido ===
-        os.makedirs(os.path.dirname(out_json), exist_ok=True)
-        with open(out_json, "w", encoding="utf-8") as f:
-            json.dump(detailed, f, ensure_ascii=False, indent=2)
-
-        # === Guardar CSV compat ===
-        csv_path = os.path.join(RESULTS_DIR, f"events_past_{today_str()}.csv")
-        fieldnames = ["uuid", "title", "dates", "organizer", "club", "place",
-                      "participants_url", "runs_url", "info_url"]
-        with open(csv_path, "w", encoding="utf-8", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=fieldnames)
-            w.writeheader()
-            for r in rows_csv:
-                w.writerow(r)
-
-        log(f"Guardado: {csv_path} | filas={len(rows_csv)}")
-        log("—— FIN PAST ——")
-
+        detailed_info.update({
+            'informacion_general': general_info,
+            'inscripcion': registration_info,
+            'pruebas': pruebas_info,
+            'contacto': contact_info,
+            'enlaces_adicionales': additional_links,
+            'url_detalle': info_url,
+            'timestamp_extraccion': time.strftime('%Y-%m-%d %H:%M:%S')
+        })
+        return detailed_info
     except Exception as e:
-        log(f"ERROR general: {type(e).__name__}: {e}")
-        try:
-            driver.save_screenshot(os.path.join(OUT_DIR, "02_error.png"))
-            log("Screenshot guardada en ./output/02_error.png")
-        except Exception:
-            pass
-        raise
+        log(f"Error extrayendo información de {info_url}: {str(e)}")
+        return event_base_info
+
+def main():
+    log("=== EXTRACCIÓN DE INFORMACIÓN DETALLADA DE COMPETICIONES ===")
+
+    # Permitir override por argumentos
+    in_path  = sys.argv[1] if len(sys.argv) >= 2 else COMPETITIONS_FILE
+    out_path = sys.argv[2] if len(sys.argv) >= 3 else DETAILED_FILE
+
+    # Cargar competiciones
+    if not os.path.exists(in_path):
+        log(f"Error: No se encuentra el archivo {in_path}")
+        sys.exit(1)
+
+    with open(in_path, 'r', encoding='utf-8') as f:
+        competiciones = json.load(f)
+
+    log(f"Cargadas {len(competiciones)} competiciones desde {in_path}")
+
+    (webdriver, By, Options, WebDriverWait, EC,
+     TimeoutException, NoSuchElementException, WebDriverException, Service) = _import_selenium()
+
+    headless = os.getenv("HEADLESS", "true").lower() == "true"
+    driver = _get_driver(headless=headless)
+
+    try:
+        _login(driver, By, WebDriverWait, EC)
+
+        competiciones_detalladas = []
+        for i, competicion in enumerate(competiciones, 1):
+            try:
+                if 'enlaces' in competicion and 'info' in competicion['enlaces']:
+                    info_url = competicion['enlaces']['info']
+                    log(f"Procesando competición {i}/{len(competiciones)}: {competicion.get('nombre', 'Sin nombre')}")
+                    competicion_detallada = extract_detailed_info(driver, info_url, competicion)
+                    competiciones_detalladas.append(competicion_detallada)
+                    slow_pause(1.5, 3.0)
+                else:
+                    log(f"Competición {i} sin enlace de información, saltando…")
+                    competiciones_detalladas.append(competicion)
+            except Exception as e:
+                log(f"Error procesando competición {i}: {e}")
+                competiciones_detalladas.append(competicion)
+                continue
+
+        with open(out_path, 'w', encoding='utf-8') as f:
+            json.dump(competiciones_detalladas, f, ensure_ascii=False, indent=2)
+        log(f"✅ Información detallada guardada en {out_path}")
+
+        # Resumen
+        comp_con_info = sum(1 for c in competiciones_detalladas if 'informacion_general' in c)
+        comp_con_precios = sum(1 for c in competiciones_detalladas if 'inscripcion' in c and 'precios' in c['inscripcion'])
+        comp_con_pruebas = sum(1 for c in competiciones_detalladas if 'pruebas' in c and c['pruebas'])
+        print("\n" + "="*80)
+        print("RESUMEN DE INFORMACIÓN EXTRAÍDA:")
+        print("="*80)
+        print(f"Competiciones procesadas: {len(competiciones_detalladas)}")
+        print(f"Con información general: {comp_con_info}")
+        print(f"Con precios: {comp_con_precios}")
+        print(f"Con pruebas detalladas: {comp_con_pruebas}")
+
     finally:
         driver.quit()
-        log("Navegador cerrado.")
+        log("Navegador cerrado")
 
 if __name__ == "__main__":
     main()
