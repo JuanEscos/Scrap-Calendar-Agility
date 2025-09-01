@@ -35,9 +35,9 @@ jobs:
         id: out
         run: |
           set -euo pipefail
-          FILE_PATH="$(find . -type f -name 'events.json' -print -quit)"
+          FILE_PATH="$(find . -type f -name 'competiciones_agility.json' -print -quit)"
           if [ -z "$FILE_PATH" ]; then
-            echo "::error::No se encontró events.json"; exit 1
+            echo "::error::No se encontró competiciones_agility.json"; exit 1
           fi
           echo "file_path=$FILE_PATH" >> "$GITHUB_OUTPUT"
           sha256sum "$FILE_PATH" | awk '{print $1}' > local.sha256
@@ -68,11 +68,11 @@ jobs:
             echo "::error::El fichero local no existe: $FILE"; exit 1
           fi
           BASE="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/Competiciones/ListadoEventos"
-          echo "Subiendo: $FILE -> ${BASE}/events.json"
+          echo "Subiendo: $FILE -> ${BASE}/competiciones_agility.json"
           curl --fail --ssl-reqd --ftp-create-dirs --disable-epsv --ftp-skip-pasv-ip \
                --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
                --upload-file "$FILE" \
-               "${BASE}/events.json"
+               "${BASE}/competiciones_agility.json"
 
       - name: Verificar remoto (descargar y comparar hash)
         env:
@@ -83,10 +83,10 @@ jobs:
         run: |
           set -euo pipefail
           BASE="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/Competiciones/ListadoEventos"
-          echo "Descargando: ${BASE}/events.json"
+          echo "Descargando: ${BASE}/competiciones_agility.json"
           curl --fail --ssl-reqd --disable-epsv --ftp-skip-pasv-ip \
                --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
-               --output remote.json "${BASE}/events.json"
+               --output remote.json "${BASE}/competiciones_agility.json"
 
           sha256sum remote.json | awk '{print $1}' > remote.sha256
           echo "Hash local : ${{ steps.out.outputs.local_hash }}"
