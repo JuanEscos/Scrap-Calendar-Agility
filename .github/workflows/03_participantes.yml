@@ -90,7 +90,6 @@ jobs:
             done < <(echo "$resp" | jq -r '.artifacts[] | select(.name=="a02-02info-json" and .expired==false) | "\(.id) \(.updated_at)"')
           done
           [ -n "$best_id" ] || { echo "::error::No active artifact named a02-02info-json"; exit 1; }
-          echo "Downloading artifact zip id=$best_id"
           mkdir -p artifacts
           curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -L \
             "https://api.github.com/repos/${repo}/actions/artifacts/${best_id}/zip" \
@@ -100,68 +99,63 @@ jobs:
 
       # --- Normalizar entrada: crear ./output/events.json que tu 03 espera ---
       - name: Build ./output/events.json from 02 JSON (or CSV fallback)
+        shell: bash
         run: |
           set -euo pipefail
           mkdir -p output
           IN_JSON="./artifacts/02competiciones_detalladas.json"
           [ -f "$IN_JSON" ] || IN_JSON="./artifacts/competiciones_detalladas.json"
-
           if [ -f "$IN_JSON" ]; then
             echo "Using input JSON: $IN_JSON"
-            python - "$IN_JSON" <<'PY'
-import sys, json, re, os
-path = sys.argv[1]
-out_path = "./output/events.json"
-data = json.load(open(path, encoding="utf-8"))
-events=[]
+            IN_JSON="$IN_JSON" python -c '
+import json,os,re,sys,pathlib
+p=os.environ["IN_JSON"]
+data=json.load(open(p,encoding="utf-8"))
+out=[]
 for it in data:
-    # id puede venir como 'id' o 'uuid', o extraer del enlace
-    id_ = it.get('id') or it.get('uuid')
+    id_=it.get("id") or it.get("uuid")
     if not id_:
-        urls = (it.get('urls') or it.get('enlaces') or {})
-        for key in ('info','participants','participantes','runs'):
-            url = urls.get(key) or ""
-            m = re.search(r'[0-9a-f-]{36}', url, re.I)
+        urls=(it.get("urls") or it.get("enlaces") or {})
+        for k in ("info","participants","participantes","runs"):
+            u=urls.get(k) or ""
+            m=re.search(r"[0-9a-f-]{36}", u, re.I)
             if m:
-                id_ = m.group(0)
-                break
-    nombre = it.get('nombre') or it.get('title') or ''
-    enlaces = it.get('enlaces') or {}
-    urls = it.get('urls') or {}
-    participantes = enlaces.get('participantes') or enlaces.get('participants') \
-                    or urls.get('participants') or urls.get('participantes') or ''
-    if id_ and participantes:
-        events.append({'id': id_, 'nombre': nombre, 'enlaces': {'participantes': participantes}})
-os.makedirs(os.path.dirname(out_path), exist_ok=True)
-with open(out_path, 'w', encoding='utf-8') as f:
-    json.dump(events, f, ensure_ascii=False, indent=2)
-print(f"Wrote {out_path} with {len(events)} events")
-PY
+                id_=m.group(0); break
+    nombre=it.get("nombre") or it.get("title") or ""
+    enl=(it.get("enlaces") or {})
+    urls=(it.get("urls") or {})
+    part=enl.get("participantes") or enl.get("participants") or urls.get("participants") or urls.get("participantes") or ""
+    if id_ and part:
+        out.append({"id":id_, "nombre":nombre, "enlaces":{"participantes":part}})
+pathlib.Path("output").mkdir(exist_ok=True)
+json.dump(out, open("./output/events.json","w",encoding="utf-8"), ensure_ascii=False, indent=2)
+print(f"Wrote ./output/events.json with {len(out)} events")
+'
           else
             echo "No JSON found. Trying CSV fallback in ./artifacts ..."
-            CSV_FILE="$(ls -t ./artifacts/events_past_*.csv 2>/dev/null | head -n1 || true)"
-            if [ -z "${CSV_FILE:-}" ]; then
-              echo "::error::No input JSON/CSV for building ./output/events.json"; exit 1
-            fi
-            python - <<'PY'
-import csv, json, os, sys
-csv_path = os.environ.get("CSV_FILE")
-out_path = "./output/events.json"
+            python -c '
+import csv,glob,json,os,sys,pathlib
+cands=sorted(glob.glob("./artifacts/events_past_*.csv"), reverse=True)
+if not cands:
+    print("::error::No input JSON/CSV for building ./output/events.json", file=sys.stderr)
+    sys.exit(1)
+csv_path=cands[0]
 rows=[]
-with open(csv_path, newline='', encoding='utf-8') as f:
+with open(csv_path, newline="", encoding="utf-8") as f:
     r=csv.DictReader(f)
     for row in r:
-        id_ = (row.get('uuid') or row.get('id') or '').strip()
-        nombre = (row.get('title') or row.get('nombre') or '').strip()
-        part = (row.get('participants_url') or row.get('participantes_url') or '').strip()
+        id_=(row.get("uuid") or row.get("id") or "").strip()
+        nombre=(row.get("title") or row.get("nombre") or "").strip()
+        part=(row.get("participants_url") or row.get("participantes_url") or "").strip()
         if id_ and part:
-            rows.append({'id': id_, 'nombre': nombre, 'enlaces': {'participantes': part}})
-os.makedirs(os.path.dirname(out_path), exist_ok=True)
-with open(out_path, 'w', encoding='utf-8') as f:
-    json.dump(rows, f, ensure_ascii=False, indent=2)
-print(f"Wrote {out_path} with {len(rows)} events")
-PY
+            rows.append({"id":id_, "nombre":nombre, "enlaces":{"participantes":part}})
+pathlib.Path("output").mkdir(exist_ok=True)
+json.dump(rows, open("./output/events.json","w",encoding="utf-8"), ensure_ascii=False, indent=2)
+print(f"Wrote ./output/events.json with {len(rows)} events (from CSV)")
+'
           fi
+          echo "Preview:"
+          head -n 40 ./output/events.json || true
 
       # --- Ejecutar tu script 03 (sin argumentos; lee ./output/events.json) ---
       - name: Run 03_eventosproxParticipantes.py
