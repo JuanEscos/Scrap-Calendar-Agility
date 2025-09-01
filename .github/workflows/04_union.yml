@@ -1,4 +1,4 @@
-name: 4 - Union participantes
+name: 04 - Union participantes
 
 on:
   workflow_run:
