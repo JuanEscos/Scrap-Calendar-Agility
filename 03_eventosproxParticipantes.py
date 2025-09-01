@@ -260,18 +260,292 @@ def login(driver):
         log(f"❌ Error durante login: {str(e)}")
         return False
 
+# --- Helpers para limpieza/normalización ---
+def _t(x):
+    return unicodedata.normalize("NFKC", x).strip() if isinstance(x, str) else x
+
+def _clean_spaces(s):
+    return re.sub(r"\s+", " ", s).strip() if isinstance(s, str) else s
+
+def _text(el):
+    try:
+        return _clean_spaces(el.text)
+    except Exception:
+        return ""
+
+GRADE_PAT = re.compile(r"\b(?:grado\s*|g)\s*(pre|1|2|3)\b", re.I)
+CAT_PAT   = re.compile(r"\b(?:xs|s|m|i|l|20|30|40|50)\b", re.I)
+UUID_PAT  = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
+
+FIELD_MAP = {
+    # cabeceras -> clave normalizada
+    "dorsal": "Dorsal", "bib": "Dorsal", "start": "Dorsal",
+    "guia": "Guia", "guide": "Guia", "handler": "Guia", "handler name": "Guia",
+    "perro": "Perro", "dog": "Perro", "dog name": "Perro",
+    "raza": "Raza", "breed": "Raza",
+    "edad": "Edad", "age": "Edad",
+    "sexo": "Genero", "gender": "Genero", "genero": "Genero", "sex": "Genero",
+    "altura": "Altura_cm", "height": "Altura_cm", "height (cm)": "Altura_cm", "height_cm": "Altura_cm",
+    "pedigree": "Pedigree",
+    "licencia": "Licencia", "license": "Licencia", "licence": "Licencia",
+    "federacion": "Federacion", "federation": "Federacion",
+    "club": "Club",
+    "grado": "Grado", "grade": "Grado", "level": "Grado",
+    "categoria": "Categoria", "category": "Categoria", "size": "Categoria", "size class": "Categoria",
+}
+
+def _header_to_key(h):
+    h = _t(h).lower()
+    h = h.replace(":", "").replace(".", "")
+    return FIELD_MAP.get(h)
+
+def _infer_grade(text):
+    m = GRADE_PAT.search(text or "")
+    if not m: return ""
+    val = m.group(1).upper()
+    return "PRE" if val == "PRE" else f"{val}"
+
+def _infer_cat(text):
+    m = CAT_PAT.search((text or "").upper())
+    return m.group(0) if m else ""
+
+def _maybe_click_cookies(driver):
+    # intenta cerrar banners típicos
+    sels = [
+        '[data-testid="uc-accept-all-button"]',
+        'button[aria-label="Accept all"]',
+        'button[aria-label="Aceptar todo"]',
+        'button:has(svg+span), button:has(span:contains("Accept"))',
+    ]
+    for s in sels:
+        try:
+            btns = driver.find_elements(By.CSS_SELECTOR, s)
+            if btns:
+                btns[0].click()
+                slow_pause(0.4, 0.8)
+                return
+        except Exception:
+            pass
+
+def _infinite_scroll(driver, max_scrolls=10, wait_s=1.2):
+    last_h = driver.execute_script("return document.body.scrollHeight;")
+    for _ in range(max_scrolls):
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        time.sleep(wait_s)
+        h = driver.execute_script("return document.body.scrollHeight;")
+        if h == last_h:
+            break
+        last_h = h
+
+def _normalize_row(row):
+    """row puede venir de tabla o tarjeta (dict libre); devuelve dict con tus claves."""
+    out = {
+        "ID": row.get("ID",""),
+        "Dorsal": row.get("Dorsal",""),
+        "Guia": row.get("Guia",""),
+        "Perro": row.get("Perro",""),
+        "Raza": row.get("Raza",""),
+        "Edad": row.get("Edad",""),
+        "Genero": row.get("Genero",""),
+        "Altura_cm": row.get("Altura_cm",""),
+        "Pedigree": row.get("Pedigree",""),
+        "Licencia": row.get("Licencia",""),
+        "Federacion": row.get("Federacion",""),
+        "Club": row.get("Club",""),
+        "Grado": row.get("Grado",""),
+        "Categoria": row.get("Categoria",""),
+        # estructura para 04:
+        "Competiciones": {}  # la llenamos luego si detectamos fechas
+    }
+    # Correcciones frecuentes
+    if isinstance(out["Altura_cm"], str):
+        m = re.search(r"(\d{2,3})", out["Altura_cm"])
+        if m: out["Altura_cm"] = m.group(1)
+    # Mi Perro 10 (bug típico): si dorsal=10 y nombre=Mi Perro 10 -> limpia
+    if out["Perro"].lower().startswith("mi perro"):
+        out["Perro"] = out["Perro"].replace("Mi Perro","").strip()
+    return out
+
+def _parse_table(soup):
+    """Intenta parsear tabla de participantes <table>."""
+    table = soup.find("table")
+    if not table: 
+        return []
+
+    # cabeceras
+    headers = []
+    thead = table.find("thead")
+    if thead:
+        ths = thead.find_all(["th","td"])
+        headers = [_t(th.get_text()) for th in ths]
+    if not headers:
+        # intenta primera fila del tbody
+        first = table.find("tr")
+        if first:
+            headers = [_t(td.get_text()) for td in first.find_all(["th","td"])]
+
+    # cuerpo
+    rows = []
+    for tr in table.find_all("tr"):
+        tds = tr.find_all("td")
+        if not tds: 
+            continue
+        r = {}
+        for i, td in enumerate(tds):
+            hkey = _header_to_key(headers[i]) if i < len(headers) else None
+            if not hkey:
+                # heurística por texto del td
+                text = _text(td)
+                # asignaciones por patrón
+                if "@" in text and "." in text and not r.get("Email"):
+                    hkey = "Email"  # no usado, pero por si acaso
+                else:
+                    # intenta mapear por keywords
+                    m = _header_to_key(text.lower().split()[0])
+            val = _text(td)
+            if not hkey:
+                # fallback: intenta por data-label (responsive tables)
+                lab = td.get("data-label")
+                if lab:
+                    hkey = _header_to_key(lab)
+            if hkey:
+                r[hkey] = val
+        if r:
+            rows.append(_normalize_row(r))
+    return rows
+
+def _parse_cards(soup):
+    """Intenta parsear tarjetas/list-items de participantes."""
+    cards = []
+    # Heurísticas: bloques con muchas etiquetas <li>, <div class*="participant|card|row">
+    candidates = soup.select('div[class*="participant"], div[class*="card"], li[class*="participant"], div[class*="row"]')
+    if not candidates:
+        # fallback: cualquier li con varios spans
+        candidates = soup.select("li:has(span)")
+    for c in candidates:
+        txt = _text(c)
+        # filtro rápido (evita contenedores muy grandes sin datos)
+        if len(txt) < 10 or len(txt) > 3000:
+            continue
+        r = {}
+        # Busca pares label: value
+        for lab in ["Dorsal","Bib","Start","Guia","Guide","Handler","Perro","Dog","Breed","Raza","Edad","Age","Sexo","Gender","Altura","Height","Licencia","License","Federacion","Federation","Club","Pedigree","Categoria","Category","Grado","Grade","Level"]:
+            # lab:
+            m = re.search(rf"{lab}\s*[:\-]\s*([^\n|•]+)", txt, re.I)
+            if m:
+                key = _header_to_key(lab.lower()) or lab
+                r[key] = _clean_spaces(m.group(1))
+        # También intenta detectar grado/categoría en el bloque entero
+        r.setdefault("Grado", _infer_grade(txt))
+        r.setdefault("Categoria", _infer_cat(txt))
+
+        # dorsal aislado
+        if not r.get("Dorsal"):
+            m = re.search(r"\b(?:dorsal|bib|start)\s*(\d{1,4})\b", txt, re.I)
+            if m: r["Dorsal"] = m.group(1)
+
+        # nombre perro y guía heurísticos si faltan
+        if not r.get("Perro"):
+            m = re.search(r"Perro\s*[:\-]\s*([^\n|•]+)", txt, re.I)
+            if m: r["Perro"] = _clean_spaces(m.group(1))
+        if not r.get("Guia"):
+            m = re.search(r"(?:Gu[ií]a|Handler|Guide)\s*[:\-]\s*([^\n|•]+)", txt, re.I)
+            if m: r["Guia"] = _clean_spaces(m.group(1))
+
+        if r:
+            cards.append(_normalize_row(r))
+    return cards
+
+def _extract_competition_dates(soup):
+    """Devuelve lista de fechas (strings) detectadas en la página (cabeceras, badges...)."""
+    texts = []
+    # típicos lugares donde aparecen fechas
+    for sel in ["h1","h2","h3",".text-xs",".badge",".tag","header",".subtitle",".caption"]:
+        for el in soup.select(sel):
+            t = _text(el)
+            if re.search(r"\b(20\d{2}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|Ene|Feb|Mar|Abr|May|Jun|Jul|Ago|Sep|Oct|Nov|Dic)\b", t, re.I):
+                texts.append(t)
+    # dedup conservando orden
+    seen, out = set(), []
+    for t in texts:
+        if t not in seen:
+            out.append(t)
+            seen.add(t)
+    return out[:10]
+
 def extract_participants_data(driver, participants_url):
-    """Extrae datos de participantes desde la URL proporcionada"""
-    # Implementación de ejemplo - debes completar esta función
+    """Extrae datos de participantes desde la URL proporcionada."""
     log(f"   Accediendo a: {participants_url}")
     try:
         driver.get(participants_url)
-        time.sleep(3)
-        # Aquí iría la lógica real de extracción
-        return []  # Placeholder
+        WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+        _maybe_click_cookies(driver)
+        # si la lista es lazy, scrollea para asegurar carga
+        _infinite_scroll(driver, MAX_SCROLLS, SCROLL_WAIT_S)
+        slow_pause(1.0, 1.5)
+
+        # a veces hay pestañas o botones "Participants"/"Inscritos"
+        for text in ("Participants","Inscritos","Listado","Entrants"):
+            try:
+                btn = driver.find_element(By.XPATH, f"//button[contains(., '{text}') or //a[contains(., '{text}')]]")
+                btn.click(); slow_pause(0.6, 1.2)
+            except Exception:
+                pass
+
+        html = driver.page_source
+        soup = BeautifulSoup(html, "lxml")
+
+        # 1) prueba tabla
+        rows = _parse_table(soup)
+
+        # 2) si no hay tabla, prueba tarjetas
+        if not rows:
+            rows = _parse_cards(soup)
+
+        # 3) si aún vacío, intenta “list items” simples
+        if not rows:
+            items = soup.select("li")
+            for li in items:
+                t = _text(li)
+                if len(t) < 10 or len(t) > 1200:
+                    continue
+                r = {
+                    "Dorsal": (re.search(r"\b\d{1,4}\b", t).group(0) if re.search(r"\b\d{1,4}\b", t) else ""),
+                    "Guia": "",
+                    "Perro": "",
+                    "Raza": "",
+                }
+                # heurísticos
+                m = re.search(r"(?:Gu[ií]a|Handler|Guide)\s*[:\-]\s*([^\n|•]+)", t, re.I)
+                if m: r["Guia"] = _clean_spaces(m.group(1))
+                m = re.search(r"(?:Perro|Dog)\s*[:\-]\s*([^\n|•]+)", t, re.I)
+                if m: r["Perro"] = _clean_spaces(m.group(1))
+                m = re.search(r"(?:Raza|Breed)\s*[:\-]\s*([^\n|•]+)", t, re.I)
+                if m: r["Raza"] = _clean_spaces(m.group(1))
+                r["Grado"] = _infer_grade(t)
+                r["Categoria"] = _infer_cat(t)
+                rows.append(_normalize_row(r))
+
+        # 4) intento de fechas/competitions para poblar "Competiciones"
+        fechas_detectadas = _extract_competition_dates(soup)
+        for r in rows:
+            compmap = {}
+            # si la página muestra múltiples días/rondas, usa las fechas detectadas
+            for i, f in enumerate(fechas_detectadas, 1):
+                compmap[f"comp_{i}"] = {"Fecha": f}
+            # añade grado/categoría deducidos a la primera
+            if compmap:
+                first_key = next(iter(compmap))
+                if r.get("Grado"): compmap[first_key]["Grado"] = r["Grado"]
+                if r.get("Categoria"): compmap[first_key]["Categoria"] = r["Categoria"]
+            r["Competiciones"] = compmap
+
+        return rows
+
     except Exception as e:
         log(f"❌ Error extrayendo participantes: {e}")
         return []
+
 
 def save_participants_to_json(participants, event_name, event_id):
     """Guarda los participantes en archivo JSON"""
