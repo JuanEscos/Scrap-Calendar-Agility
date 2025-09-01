@@ -1,4 +1,4 @@
-name: 03 - Participantes por evento
+name: 3 - Participantes por evento
 
 on:
   workflow_run:
