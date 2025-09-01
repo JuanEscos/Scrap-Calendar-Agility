@@ -4,17 +4,21 @@ on:
   workflow_run:
     workflows: ["01 - Eventos Prox (JSON base)"]
     types: [completed]
+  # Opcional para relanzar manualmente
+  workflow_dispatch: {}
 
 jobs:
   produce_02info:
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    # Si viene encadenado, solo continúa si el 01 terminó OK
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') }}
     runs-on: ubuntu-latest
     env:
       TZ: Europe/Madrid
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Mostrar árbol del repo y rama
+      - name: Mostrar árbol del repo y rama (debug)
         run: |
           echo "BRANCH: $GITHUB_REF_NAME"
           git ls-files | sed 's/^/ - /' | head -n 200
@@ -26,20 +30,33 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.txt
 
-      - name: Instalar dependencias
+      - name: Instalar dependencias (incluye Selenium)
         run: |
+          set -euo pipefail
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install beautifulsoup4 selenium webdriver-manager
+          # Por si no están en requirements.txt:
+          pip install "selenium==4.*" "webdriver-manager==4.*" beautifulsoup4 lxml
 
       - name: Setup Chrome
         uses: browser-actions/setup-chrome@v1
-      - name: Comprobar Chrome
+
+      - name: Comprobar Chrome y librerías
         run: |
+          set -euo pipefail
           which google-chrome
           google-chrome --version || true
+          python - << 'PY'
+import sys
+print("Python:", sys.version)
+import selenium, bs4
+print("Selenium:", selenium.__version__)
+print("BS4 OK")
+PY
 
-      - name: Descargar artefacto 01events
+      # Descarga artefacto del workflow 01 (si viene encadenado)
+      - name: Descargar artefacto 01events (modo encadenado)
+        if: ${{ github.event_name == 'workflow_run' }}
         uses: actions/download-artifact@v4
         with:
           name: a01-01events-json
@@ -47,19 +64,33 @@ jobs:
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
+      # Fallback si lo lanzas manualmente: toma el último artefacto del workflow 01 en 'main'
+      - name: Descargar artefacto 01events (modo manual)
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: a01-01events-json
+          path: ./artifacts
+          workflow: "01 - Eventos Prox (JSON base)"
+          branch: main
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Ejecutar 02_eventosproxINFO.py
         run: |
           set -euo pipefail
           mkdir -p output
           IN="./artifacts/01events.json"
-          test -f "$IN" || { echo "::error::No existe $IN"; exit 1; }
-          SCRIPT_PATH="$(find . -maxdepth 3 -type f -name '02_eventosproxINFO.py' -print -quit)"
+          test -f "$IN" || { echo "::error::No existe $IN"; ls -la ./artifacts || true; exit 1; }
+
+          SCRIPT_PATH="$(find . -maxdepth 5 -type f -name '02_eventosproxINFO.py' -print -quit)"
           if [ -z "${SCRIPT_PATH:-}" ]; then
             echo "::error::No se encontró 02_eventosproxINFO.py"; exit 1
           fi
           echo "Usando script: $SCRIPT_PATH"
           python "$SCRIPT_PATH" "$IN" "./output/02competiciones_detalladas.json"
-          test -f ./output/02competiciones_detalladas.json
+
+          test -f ./output/02competiciones_detalladas.json || { echo "::error::No se generó la salida esperada"; exit 1; }
+          ls -lh ./output
 
       - name: Subir artefacto 02info
         uses: actions/upload-artifact@v4
