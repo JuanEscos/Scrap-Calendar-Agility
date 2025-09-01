@@ -4,12 +4,10 @@ on:
   workflow_run:
     workflows: ["01 - Eventos Prox (JSON base)"]
     types: [completed]
-  # Opcional para relanzar manualmente
   workflow_dispatch: {}
 
 jobs:
   produce_02info:
-    # Si viene encadenado, solo continúa si el 01 terminó OK
     if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') }}
     runs-on: ubuntu-latest
     env:
@@ -35,7 +33,6 @@ jobs:
           set -euo pipefail
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          # Por si no están en requirements.txt:
           pip install "selenium==4.*" "webdriver-manager==4.*" beautifulsoup4 lxml
 
       - name: Setup Chrome
@@ -46,15 +43,9 @@ jobs:
           set -euo pipefail
           which google-chrome
           google-chrome --version || true
-          python - << 'PY'
-import sys
-print("Python:", sys.version)
-import selenium, bs4
-print("Selenium:", selenium.__version__)
-print("BS4 OK")
-PY
+          python -c "import sys,selenium,bs4; print('Python:',sys.version); print('Selenium:',selenium.__version__); print('BS4 OK')"
 
-      # Descarga artefacto del workflow 01 (si viene encadenado)
+      # Encadenado: baja artefacto exacto del workflow 01
       - name: Descargar artefacto 01events (modo encadenado)
         if: ${{ github.event_name == 'workflow_run' }}
         uses: actions/download-artifact@v4
@@ -64,7 +55,7 @@ PY
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      # Fallback si lo lanzas manualmente: toma el último artefacto del workflow 01 en 'main'
+      # Manual: baja el último artefacto del workflow 01 en la rama main
       - name: Descargar artefacto 01events (modo manual)
         if: ${{ github.event_name == 'workflow_dispatch' }}
         uses: actions/download-artifact@v4
