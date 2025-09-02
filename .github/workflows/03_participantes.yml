@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TZ: Europe/Madrid
-      # Tu script 03 usa estas variables (dotenv):
+      # Variables de entorno (por si tu script las toma via os.getenv además del .env)
       FLOW_EMAIL: ${{ secrets.FLOW_EMAIL }}
       FLOW_PASS: ${{ secrets.FLOW_PASS }}
       HEADLESS: "true"
@@ -105,19 +105,14 @@ jobs:
             const fs = require('fs');
             const path = require('path');
 
-            // Input candidates
             const in1 = './artifacts/02competiciones_detalladas.json';
             const in2 = './artifacts/competiciones_detalladas.json';
-
-            let inputJson = null;
-            if (fs.existsSync(in1)) inputJson = in1;
-            else if (fs.existsSync(in2)) inputJson = in2;
+            let inputJson = fs.existsSync(in1) ? in1 : (fs.existsSync(in2) ? in2 : null);
 
             const outDir = './output';
             const outPath = path.join(outDir, 'events.json');
             fs.mkdirSync(outDir, { recursive: true });
 
-            // Helper to write events.json
             function writeEvents(out) {
               fs.writeFileSync(outPath, JSON.stringify(out, null, 2), 'utf8');
               core.info(`Wrote ${outPath} with ${out.length} events`);
@@ -148,18 +143,20 @@ jobs:
               }
               writeEvents(out);
             } else {
-              // CSV fallback
               const dir = './artifacts';
-              const list = fs.existsSync(dir) ? fs.readdirSync(dir) : [];
-              const csvs = list.filter(f => /^events_past_.*\.csv$/i.test(f))
-                               .sort((a,b) => b.localeCompare(a));
+              if (!fs.existsSync(dir)) {
+                core.setFailed('No artifacts dir found.');
+                return;
+              }
+              const list = fs.readdirSync(dir);
+              const csvs = list.filter(f => /^events_past_.*\.csv$/i.test(f)).sort((a,b)=>b.localeCompare(a));
               if (!csvs.length) {
                 core.setFailed('No input JSON/CSV to build ./output/events.json');
                 return;
               }
               const csvPath = path.join(dir, csvs[0]);
-              const content = fs.readFileSync(csvPath, 'utf8');
-              const lines = content.split(/\r?\n/).filter(Boolean);
+              const content = fs.readFileSync(csvPath, 'utf8').trim();
+              const lines = content.split(/\r?\n/);
               const header = lines.shift().split(',');
               const idx = Object.fromEntries(header.map((h,i)=>[h.trim().toLowerCase(), i]));
               const get = (row, k) => row[idx[k]] ? row[idx[k]].trim() : '';
@@ -176,7 +173,23 @@ jobs:
 
           result-encoding: string
 
-      # --- Ejecutar tu script 03 (sin argumentos; lee ./output/events.json) ---
+      # --- Crear .env desde Secrets para que lo lea load_dotenv() ---
+      - name: Create .env from secrets (for 03 script)
+        run: |
+          set -euo pipefail
+          rm -f .env
+          {
+            printf "FLOW_EMAIL=%s\n" "${{ secrets.FLOW_EMAIL }}"
+            printf "FLOW_PASS=%s\n"  "${{ secrets.FLOW_PASS }}"
+            printf "HEADLESS=%s\n"   "${HEADLESS}"
+            printf "INCOGNITO=%s\n"  "${INCOGNITO}"
+            printf "OUT_DIR=./output\n"
+            printf "MAX_SCROLLS=10\nSCROLL_WAIT_S=2.0\nSLOW_MIN_S=1.0\nSLOW_MAX_S=3.0\n"
+            printf "SHOW_CONFIG=true\n"
+          } >> .env
+          echo ".env created (values hidden)"
+
+      # --- Ejecutar tu script 03 (sin argumentos; lee ./output/events.json y .env) ---
       - name: Run 03_eventosproxParticipantes.py
         run: |
           set -euo pipefail
@@ -194,7 +207,7 @@ jobs:
           echo "Total participants JSON: ${#files[@]}"
           ls -lh ./output/participants | head -n 100 || true
           if [ ${#files[@]} -eq 0 ]; then
-            echo "::warning::No participant files were generated. (extract_participants_data() may be a stub)"
+            echo "::warning::No participant files were generated. (extract_participants_data() may still be stub or page structure changed)"
           fi
 
       - name: Upload participants artifact
