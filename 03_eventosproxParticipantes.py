@@ -546,21 +546,14 @@ def extract_participants_data(driver, participants_url):
         log(f"❌ Error extrayendo participantes: {e}")
         return []
 
-
 def save_participants_to_json(participants, event_name, event_id):
-    """Guarda los participantes en archivo JSON"""
-    # Implementación de ejemplo
-    filename = f"participants_{event_id}.json"
-    filepath = os.path.join(PARTICIPANTS_DIR, filename)
+    safe_name = re.sub(r'[\\/*?:"<>|]', "_", event_name)
+    filepath  = os.path.join(PARTICIPANTS_DIR, f"participants_{safe_name}_{event_id}.json")
     
     try:
-        with open(filepath, 'w', encoding='utf-8') as f:
-            json.dump({
-                'event_id': event_id,
-                'event_name': event_name,
-                'participants': participants,
-                'scraped_at': time.strftime('%Y-%m-%d %H:%M:%S')
-            }, f, ensure_ascii=False, indent=2)
+        with open(filepath, "w", encoding="utf-8") as f:
+            # Ideal: guardar SOLO la lista (como antes funcionaba el 04)
+            json.dump(participants, f, ensure_ascii=False, indent=2)
         return True
     except Exception as e:
         log(f"❌ Error guardando archivo: {e}")
