@@ -97,65 +97,84 @@ jobs:
           unzip -o a02.zip -d ./artifacts
           ls -la ./artifacts
 
-      # --- Normalizar entrada: crear ./output/events.json que tu 03 espera ---
-      - name: Build ./output/events.json from 02 JSON (or CSV fallback)
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p output
-          IN_JSON="./artifacts/02competiciones_detalladas.json"
-          [ -f "$IN_JSON" ] || IN_JSON="./artifacts/competiciones_detalladas.json"
-          if [ -f "$IN_JSON" ]; then
-            echo "Using input JSON: $IN_JSON"
-            IN_JSON="$IN_JSON" python -c '
-import json,os,re,sys,pathlib
-p=os.environ["IN_JSON"]
-data=json.load(open(p,encoding="utf-8"))
-out=[]
-for it in data:
-    id_=it.get("id") or it.get("uuid")
-    if not id_:
-        urls=(it.get("urls") or it.get("enlaces") or {})
-        for k in ("info","participants","participantes","runs"):
-            u=urls.get(k) or ""
-            m=re.search(r"[0-9a-f-]{36}", u, re.I)
-            if m:
-                id_=m.group(0); break
-    nombre=it.get("nombre") or it.get("title") or ""
-    enl=(it.get("enlaces") or {})
-    urls=(it.get("urls") or {})
-    part=enl.get("participantes") or enl.get("participants") or urls.get("participants") or urls.get("participantes") or ""
-    if id_ and part:
-        out.append({"id":id_, "nombre":nombre, "enlaces":{"participantes":part}})
-pathlib.Path("output").mkdir(exist_ok=True)
-json.dump(out, open("./output/events.json","w",encoding="utf-8"), ensure_ascii=False, indent=2)
-print(f"Wrote ./output/events.json with {len(out)} events")
-'
-          else
-            echo "No JSON found. Trying CSV fallback in ./artifacts ..."
-            python -c '
-import csv,glob,json,os,sys,pathlib
-cands=sorted(glob.glob("./artifacts/events_past_*.csv"), reverse=True)
-if not cands:
-    print("::error::No input JSON/CSV for building ./output/events.json", file=sys.stderr)
-    sys.exit(1)
-csv_path=cands[0]
-rows=[]
-with open(csv_path, newline="", encoding="utf-8") as f:
-    r=csv.DictReader(f)
-    for row in r:
-        id_=(row.get("uuid") or row.get("id") or "").strip()
-        nombre=(row.get("title") or row.get("nombre") or "").strip()
-        part=(row.get("participants_url") or row.get("participantes_url") or "").strip()
-        if id_ and part:
-            rows.append({"id":id_, "nombre":nombre, "enlaces":{"participantes":part}})
-pathlib.Path("output").mkdir(exist_ok=True)
-json.dump(rows, open("./output/events.json","w",encoding="utf-8"), ensure_ascii=False, indent=2)
-print(f"Wrote ./output/events.json with {len(rows)} events (from CSV)")
-'
-          fi
-          echo "Preview:"
-          head -n 40 ./output/events.json || true
+      # --- Construir ./output/events.json SIN heredocs (usando github-script) ---
+      - name: Build output/events.json from 02 JSON (or CSV fallback)
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            // Input candidates
+            const in1 = './artifacts/02competiciones_detalladas.json';
+            const in2 = './artifacts/competiciones_detalladas.json';
+
+            let inputJson = null;
+            if (fs.existsSync(in1)) inputJson = in1;
+            else if (fs.existsSync(in2)) inputJson = in2;
+
+            const outDir = './output';
+            const outPath = path.join(outDir, 'events.json');
+            fs.mkdirSync(outDir, { recursive: true });
+
+            // Helper to write events.json
+            function writeEvents(out) {
+              fs.writeFileSync(outPath, JSON.stringify(out, null, 2), 'utf8');
+              core.info(`Wrote ${outPath} with ${out.length} events`);
+            }
+
+            const uuidRe = /[0-9a-f-]{36}/i;
+
+            if (inputJson) {
+              const data = JSON.parse(fs.readFileSync(inputJson, 'utf8'));
+              const out = [];
+              for (const it of data) {
+                let id = it.id || it.uuid;
+                if (!id) {
+                  const urls = (it.urls || it.enlaces || {});
+                  for (const k of ['info','participants','participantes','runs']) {
+                    const u = urls[k] || '';
+                    const m = u.match(uuidRe);
+                    if (m) { id = m[0]; break; }
+                  }
+                }
+                const nombre = it.nombre || it.title || '';
+                const enlaces = it.enlaces || {};
+                const urls = it.urls || {};
+                const participantes = enlaces.participantes || enlaces.participants || urls.participants || urls.participantes || '';
+                if (id && participantes) {
+                  out.push({ id, nombre, enlaces: { participantes } });
+                }
+              }
+              writeEvents(out);
+            } else {
+              // CSV fallback
+              const dir = './artifacts';
+              const list = fs.existsSync(dir) ? fs.readdirSync(dir) : [];
+              const csvs = list.filter(f => /^events_past_.*\.csv$/i.test(f))
+                               .sort((a,b) => b.localeCompare(a));
+              if (!csvs.length) {
+                core.setFailed('No input JSON/CSV to build ./output/events.json');
+                return;
+              }
+              const csvPath = path.join(dir, csvs[0]);
+              const content = fs.readFileSync(csvPath, 'utf8');
+              const lines = content.split(/\r?\n/).filter(Boolean);
+              const header = lines.shift().split(',');
+              const idx = Object.fromEntries(header.map((h,i)=>[h.trim().toLowerCase(), i]));
+              const get = (row, k) => row[idx[k]] ? row[idx[k]].trim() : '';
+              const out = [];
+              for (const line of lines) {
+                const cols = line.split(',');
+                const id = get(cols, 'uuid') || get(cols, 'id');
+                const nombre = get(cols, 'title') || get(cols, 'nombre');
+                const part = get(cols, 'participants_url') || get(cols, 'participantes_url');
+                if (id && part) out.push({ id, nombre, enlaces: { participantes: part } });
+              }
+              writeEvents(out);
+            }
+
+          result-encoding: string
 
       # --- Ejecutar tu script 03 (sin argumentos; lee ./output/events.json) ---
       - name: Run 03_eventosproxParticipantes.py
