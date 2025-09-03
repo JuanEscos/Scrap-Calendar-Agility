@@ -3,10 +3,10 @@
 """
 FLOWAGILITY PARTICIPANTS SCRAPER
 =================================
-Extrae participantes desde FlowAgility:
 - Login con .env (FLOW_EMAIL/FLOW_PASS)
 - Detecta eventos pendientes desde ./output/events.json
-- Clic por fila (booking_details_show) y empareja labels/valores
+- Hace click por fila (booking_details_show) y extrae pares label→valor de grids
+- Rellena fechas/Grado/Categoría (cuando aparecen)
 - Guarda JSON por evento en ./output/participants/participants_{NOMBRE}_{UUID}.json
 """
 
@@ -33,8 +33,8 @@ load_dotenv()
 BASE_URL = "https://www.flowagility.com"
 LOGIN_URL = f"{BASE_URL}/user/login"
 OUTPUT_DIR = os.getenv("OUT_DIR", "./output")
-PARTICIPANTS_DIR = os.path.join(OUTPUT_DIR, 'participants')
-DEBUG_DIR = os.path.join(OUTPUT_DIR, 'debug_participants')
+PARTICIPANTS_DIR = os.path.join(OUTPUT_DIR, "participants")
+DEBUG_DIR = os.path.join(OUTPUT_DIR, "debug_participants")
 
 USERNAME = os.getenv("FLOW_EMAIL")
 PASSWORD = os.getenv("FLOW_PASS")
@@ -57,7 +57,9 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(PARTICIPANTS_DIR, exist_ok=True)
 os.makedirs(DEBUG_DIR, exist_ok=True)
 
-UUID_RE = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', re.I)
+UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
+
+# ============================ UTILS ============================
 
 def log(message):
     print(f"[{time.strftime('%H:%M:%S')}] {message}")
@@ -67,7 +69,7 @@ def print_header():
     print("FLOWAGILITY PARTICIPANTS SCRAPER".center(80))
     print("="*80)
     print("• Extrae datos de participantes por competición")
-    print("• Hace click fila a fila para abrir el detalle")
+    print("• Click en cada fila de la lista para abrir el detalle")
     print("• Guarda JSON por evento en ./output/participants")
     print("="*80)
     print(f"📁 Directorio de salida: {OUTPUT_DIR}")
@@ -90,25 +92,83 @@ def slow_pause(min_s=None, max_s=None):
     if b < a: a, b = b, a
     time.sleep(random.uniform(a, b))
 
-# ============================ DETECCIÓN DE EVENTOS ============================
+def strip_accents(s: str) -> str:
+    return "".join(c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c))
 
-def _uuid_from_filename(name):
+# Etiquetas aceptadas -> clave destino en ES (sin acentos)
+LABELS = {
+    "dorsal":        "Dorsal",
+    "bib":           "Dorsal",
+    "start":         "Dorsal",
+
+    "guia":          "Guia",
+    "guía":          "Guia",
+    "handler":       "Guia",
+    "guide":         "Guia",
+
+    "perro":         "Perro",
+    "dog":           "Perro",
+
+    "raza":          "Raza",
+    "breed":         "Raza",
+
+    "edad":          "Edad",
+    "age":           "Edad",
+
+    "genero":        "Genero",
+    "género":        "Genero",
+    "gender":        "Genero",
+    "sex":           "Genero",
+
+    "altura":        "Altura_cm",
+    "height":        "Altura_cm",
+    "height (cm)":   "Altura_cm",
+
+    "pedigree":      "Pedigree",
+
+    "licencia":      "Licencia",
+    "license":       "Licencia",
+    "licence":       "Licencia",
+
+    "federacion":    "Federacion",
+    "federación":    "Federacion",
+    "federation":    "Federacion",
+
+    "club":          "Club",
+
+    "grado":         "Grado",
+    "level":         "Grado",
+
+    "categoria":     "Categoria",
+    "categoría":     "Categoria",
+    "category":      "Categoria",
+    "size":          "Categoria",
+}
+
+def _map_label_to_key(txt: str):
+    t = strip_accents((txt or "").strip().lower())
+    if t.endswith(":"):
+        t = t[:-1].strip()
+    return LABELS.get(t, None)
+
+def _uuid_from_filename(name: str) -> str:
     m = UUID_RE.search(name)
     return m.group(0).lower() if m else ""
+
+# ============================ DETECCIÓN DE EVENTOS ============================
 
 def get_scraped_events():
     """IDs de eventos ya procesados (por archivos en ./output/participants)."""
     processed = set()
     try:
         for filename in os.listdir(PARTICIPANTS_DIR):
-            if not filename.endswith(".json"): 
+            if not filename.endswith(".json"):
                 continue
-            # 1) intenta sacar UUID del nombre
             uid = _uuid_from_filename(filename)
             if uid:
                 processed.add(uid)
                 continue
-            # 2) si no hay UUID en nombre, abre y mira 'event_id'
+            # Compatibilidad: si antiguamente se guardaba wrapper con event_id:
             try:
                 with open(os.path.join(PARTICIPANTS_DIR, filename), "r", encoding="utf-8") as f:
                     data = json.load(f)
@@ -124,13 +184,13 @@ def get_events_to_scrape():
     """Eventos pendientes desde ./output/events.json (id, nombre, enlaces.participantes)."""
     log("Buscando eventos para procesar…")
     events_to_scrape = []
-    events_file = os.path.join(OUTPUT_DIR, 'events.json')
+    events_file = os.path.join(OUTPUT_DIR, "events.json")
     if not os.path.exists(events_file):
         log(f"❌ ERROR: No se encuentra {events_file}")
         return []
 
     try:
-        with open(events_file, 'r', encoding='utf-8') as f:
+        with open(events_file, "r", encoding="utf-8") as f:
             all_events = json.load(f)
         log(f"📊 Total eventos en events.json: {len(all_events)}")
 
@@ -138,7 +198,7 @@ def get_events_to_scrape():
         log(f"📊 Eventos ya procesados: {len(processed)}")
 
         for ev in all_events:
-            ev_id = ev.get('id')
+            ev_id = ev.get("id")
             if ev_id and ev_id not in processed:
                 events_to_scrape.append(ev)
 
@@ -159,7 +219,7 @@ def get_driver():
     opts.add_argument("--disable-dev-shm-usage")
     opts.add_argument("--window-size=1920,1080")
     opts.add_experimental_option("excludeSwitches", ["enable-automation"])
-    opts.add_experimental_option('useAutomationExtension', False)
+    opts.add_experimental_option("useAutomationExtension", False)
     try:
         service = Service(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=opts)
@@ -189,18 +249,17 @@ def login(driver):
 
 def extract_participants_data(driver, participants_url):
     """
-    Abre la lista de participantes, hace click en cada fila (booking_details_show),
-    empareja etiquetas/valores y extrae fechas de pruebas para construir
-    'Competiciones' (usado por el 04).
+    Versión robusta: tras cada click, recorre bloques grid-cols-2 y toma pares (label,value)
+    sin depender de clases. También extrae fechas de mangas y rellena 'Competiciones'.
     """
     log(f"   Accediendo a: {participants_url}")
     participants = []
     try:
         driver.get(participants_url)
-        WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+        WebDriverWait(driver, 25).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
         slow_pause(1.0, 1.5)
 
-        # scroll para forzar carga lazy
+        # Scroll para carga lazy
         last_h = 0
         for _ in range(MAX_SCROLLS):
             driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
@@ -210,7 +269,7 @@ def extract_participants_data(driver, participants_url):
                 break
             last_h = h
 
-        # Obtén la lista de booking_ids (más robusto que mantener referencias de los botones)
+        # Recoge booking_ids (y se reutilizan para encontrar cada fila al vuelo)
         btns = driver.find_elements(By.CSS_SELECTOR, '[phx-click="booking_details_show"]')
         booking_ids = []
         for b in btns:
@@ -222,93 +281,128 @@ def extract_participants_data(driver, participants_url):
 
         for idx, bid in enumerate(booking_ids, 1):
             try:
-                # Encuentra el botón por su booking_id actual (evita stale elements)
+                # Click por selector con el booking_id actual (evita stale references)
                 sel = f'[phx-click="booking_details_show"][phx-value-booking_id="{bid}"]'
                 btn = driver.find_element(By.CSS_SELECTOR, sel)
                 driver.execute_script("arguments[0].scrollIntoView({block:'center'});", btn)
-                time.sleep(0.3)
+                time.sleep(0.2)
                 driver.execute_script("arguments[0].click();", btn)
-                time.sleep(1.0)
 
-                soup = BeautifulSoup(driver.page_source, "lxml")
-                detail = soup.find("div", {"id": bid})
-                if not detail:
-                    # fallback al último detalle expandido
-                    detail = soup.find("div", class_=lambda c: c and "break-all" in c)
+                # Espera panel de detalle asociado (o usa grid más reciente como fallback)
+                root = None
+                try:
+                    root = WebDriverWait(driver, 5).until(
+                        EC.presence_of_element_located((By.XPATH, f"//*[@id='{bid}']"))
+                    )
+                except Exception:
+                    grids = driver.find_elements(By.XPATH, "//div[contains(@class,'grid') and contains(@class,'grid-cols-2')]")
+                    root = grids[-1] if grids else None
 
+                # Estructura base del participante
                 p = {
-                    "ID": bid or "",
-                    "Dorsal": "",
-                    "Guia": "",
-                    "Perro": "",
-                    "Raza": "",
-                    "Edad": "",
-                    "Genero": "",
-                    "Altura_cm": "",
-                    "Pedigree": "",
-                    "Licencia": "",
-                    "Federacion": "",
-                    "Club": "",
+                    "ID": bid,
+                    "Dorsal": "", "Guia": "", "Perro": "", "Raza": "",
+                    "Edad": "", "Genero": "", "Altura_cm": "", "Pedigree": "",
+                    "Licencia": "", "Federacion": "", "Club": "",
                     "Competiciones": {}
                 }
 
-                if detail:
-                    labels = detail.find_all("div", class_="text-gray-500 text-sm")
-                    values = detail.find_all("div", class_="font-bold break-all relative text-sm text-black")
+                # 1) Parse por pares label→valor en grids
+                if root:
+                    if root.get_attribute("id") == bid:
+                        blocks = driver.find_elements(By.XPATH, f"//*[@id='{bid}']//div[contains(@class,'grid') and contains(@class,'grid-cols-2')]")
+                    else:
+                        blocks = root.find_elements(By.XPATH, ".//div[contains(@class,'grid') and contains(@class,'grid-cols-2')]")
+                    if not blocks:
+                        # fallback: busca grids globales cercanos
+                        blocks = driver.find_elements(By.XPATH, "//div[contains(@class,'grid') and contains(@class,'grid-cols-2')]")
 
-                    for lab, val in zip(labels, values):
-                        lt = (lab.get_text(strip=True) or "").lower()
-                        vt = val.get_text(strip=True)
-                        if lt == "dorsal":                   p["Dorsal"] = vt
-                        elif lt in ("guía", "guia"):         p["Guia"] = vt
-                        elif lt == "perro":                  p["Perro"] = vt
-                        elif lt == "raza":                   p["Raza"] = vt
-                        elif lt == "edad":                   p["Edad"] = vt
-                        elif lt in ("género","genero"):      p["Genero"] = vt
-                        elif lt.startswith("altura"):        p["Altura_cm"] = vt
-                        elif "pedigree" in lt:               p["Pedigree"] = vt
-                        elif lt == "club":                   p["Club"] = vt
-                        elif lt == "licencia":               p["Licencia"] = vt
-                        elif lt in ("federación","federacion"): p["Federacion"] = vt
-                        elif lt in ("grado","level"):        p.setdefault("_grado_hint", vt)
-                        elif lt in ("categoría","categoria","size","category"): p.setdefault("_cat_hint", vt)
+                    for block in blocks:
+                        cells = block.find_elements(By.XPATH, "./div")
+                        i = 0
+                        while i + 1 < len(cells):
+                            lab = cells[i].text.strip()
+                            val = cells[i+1].text.strip()
+                            key = _map_label_to_key(lab)
+                            if key:
+                                if key == "Altura_cm":
+                                    m = re.search(r"(\d{2,3})", val)
+                                    if m: val = m.group(1)
+                                p[key] = val
+                            i += 2
 
-                    # Fechas de mangas/pruebas (máx 10) – mismos selectores que tu versión previa
-                    headers = detail.find_all('div', class_='mt-4 col-span-2 font-bold text-sm border-b mb-1 pb-1 border-gray-400')
-                    fechas = []
-                    for j, header in enumerate(headers):
-                        if j > 9:
-                            break
-                        fecha_tag = header.find_next_sibling('div', class_='font-bold break-all relative text-sm text-black')
-                        if fecha_tag:
-                            fechas.append(fecha_tag.get_text(strip=True))
+                # 2) Fallback: clases antiguas (por si siguen presentes)
+                if not any(p[k] for k in ("Dorsal","Guia","Perro","Raza","Edad","Genero","Altura_cm","Licencia","Federacion","Club")):
+                    soup = BeautifulSoup(driver.page_source, "lxml")
+                    detail = soup.find("div", {"id": bid})
+                    if not detail:
+                        detail = soup.find("div", class_=lambda c: c and "break-all" in c)
+                    if detail:
+                        labels = detail.find_all("div", class_="text-gray-500 text-sm")
+                        values = detail.find_all("div", class_="font-bold break-all relative text-sm text-black")
+                        for lab, val in zip(labels, values):
+                            lt = (lab.get_text(strip=True) or "")
+                            key = _map_label_to_key(lt)
+                            if key:
+                                vt = val.get_text(strip=True)
+                                if key == "Altura_cm":
+                                    m = re.search(r"(\d{2,3})", vt)
+                                    if m: vt = m.group(1)
+                                p[key] = vt
 
-                    compmap = {}
-                    for i, fch in enumerate(fechas[:10], 1):
-                        compmap[f"comp_{i}"] = {"Fecha": fch}
-                    if compmap:
-                        first_key = next(iter(compmap))
-                        if p.get("_grado_hint"):
-                            compmap[first_key]["Grado"] = p.pop("_grado_hint")
-                        if p.get("_cat_hint"):
-                            compmap[first_key]["Categoria"] = p.pop("_cat_hint")
-                        p["Competiciones"] = compmap
+                # 3) Fechas/Grado/Categoría
+                fechas = []
+                date_headers = driver.find_elements(By.XPATH, f"//*[@id='{bid}']//div[contains(@class,'font-bold') and contains(@class,'border-b')]") \
+                               or driver.find_elements(By.XPATH, "//div[contains(@class,'font-bold') and contains(@class,'border-b')]")
+                for hdr in date_headers[:10]:
+                    try:
+                        val = hdr.find_element(By.XPATH, "following-sibling::div[1]").text.strip()
+                        if val:
+                            fechas.append(val)
+                    except Exception:
+                        pass
 
-                # Normaliza altura (solo número)
-                if isinstance(p["Altura_cm"], str):
-                    m = re.search(r"(\d{2,3})", p["Altura_cm"])
-                    if m: p["Altura_cm"] = m.group(1)
+                compmap = {}
+                for i, fch in enumerate(fechas[:10], 1):
+                    compmap[f"comp_{i}"] = {"Fecha": fch}
 
-                # Bug típico: "Mi Perro 10" → limpia
+                # Inferencias básicas si no vinieron explícitas
+                all_txt = ""
+                try:
+                    cont = driver.find_element(By.XPATH, f"//*[@id='{bid}']")
+                    all_txt = cont.text
+                except Exception:
+                    pass
+                if not p.get("Grado"):
+                    m = re.search(r"\b(?:pre|g?\s*[123])\b", strip_accents(all_txt).lower())
+                    if m: p["Grado"] = m.group(0).upper().replace("G", "").strip()
+                if not p.get("Categoria"):
+                    m = re.search(r"\b(xs|s|m|i|l|20|30|40|50)\b", all_txt.upper())
+                    if m: p["Categoria"] = m.group(1)
+
+                if compmap:
+                    first_key = next(iter(compmap))
+                    if p.get("Grado"):     compmap[first_key]["Grado"] = p["Grado"]
+                    if p.get("Categoria"): compmap[first_key]["Categoria"] = p["Categoria"]
+                    p["Competiciones"] = compmap
+
+                # Limpieza típica “Mi Perro 10”
                 if isinstance(p["Perro"], str) and p["Perro"].lower().startswith("mi perro"):
                     p["Perro"] = p["Perro"].replace("Mi Perro", "").strip()
 
                 participants.append(p)
-                if idx % 20 == 0:
+
+                if idx % 25 == 0:
                     log(f"   … procesados {idx}/{len(booking_ids)} participantes")
 
             except Exception as e:
                 log(f"   ⚠️ Error en participante #{idx}: {e}")
+                # Dump rápido para depurar
+                try:
+                    with open(os.path.join(DEBUG_DIR, f"p_{bid}.html"), "w", encoding="utf-8") as f:
+                        f.write(driver.page_source)
+                except Exception:
+                    pass
                 continue
 
         log(f"   Total participantes extraídos: {len(participants)}")
@@ -316,14 +410,15 @@ def extract_participants_data(driver, participants_url):
 
     except Exception as e:
         log(f"❌ Error extrayendo participantes: {e}")
-        # dump de depuración
+        # Dump global
         try:
             with open(os.path.join(DEBUG_DIR, "participants_error.html"), "w", encoding="utf-8") as f:
                 f.write(driver.page_source)
-            log("   (HTML de depuración guardado)")
         except Exception:
             pass
         return []
+
+# ============================ SAVE ============================
 
 def save_participants_to_json(participants, event_name, event_id):
     """
@@ -332,10 +427,10 @@ def save_participants_to_json(participants, event_name, event_id):
     Es el formato que el 04 espera para unir sin vacíos.
     """
     safe_name = re.sub(r'[\\/*?:"<>|]', "_", event_name)
-    filename  = f"participants_{safe_name}_{event_id}.json"
-    filepath  = os.path.join(PARTICIPANTS_DIR, filename)
+    filename = f"participants_{safe_name}_{event_id}.json"
+    filepath = os.path.join(PARTICIPANTS_DIR, filename)
     try:
-        with open(filepath, 'w', encoding='utf-8') as f:
+        with open(filepath, "w", encoding="utf-8") as f:
             json.dump(participants, f, ensure_ascii=False, indent=2)
         return True
     except Exception as e:
@@ -358,10 +453,10 @@ def main():
         if not login(driver):
             return
 
-        for i, event in enumerate(events_to_scrape, 1):
-            event_id = event.get('id', f'event_{i}')
-            event_name = event.get('nombre', 'Sin nombre')
-            participants_url = event.get('enlaces', {}).get('participantes', '')
+        for i, event in enumerate(events_to_scrape[:3], 1):
+            event_id = event.get("id", f"event_{i}")
+            event_name = event.get("nombre", "Sin nombre")
+            participants_url = event.get("enlaces", {}).get("participantes", "")
 
             if not participants_url:
                 log(f"{i}/{len(events_to_scrape)}: ⚠️ Sin URL de participantes - {event_name}")
@@ -373,7 +468,6 @@ def main():
             if participants:
                 save_participants_to_json(participants, event_name, event_id)
                 log(f"   ✅ {len(participants)} participantes extraídos")
-                # Ejemplo
                 sample = participants[0]
                 log(f"   👤 Ejemplo: D{sample.get('Dorsal','?')} - {sample.get('Guia','?')} / {sample.get('Perro','?')}")
             else:
