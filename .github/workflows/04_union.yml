@@ -21,13 +21,13 @@ jobs:
         shell: bash
         run: mkdir -p "$OUT_DIR"
 
-      # Busca el último run exitoso del workflow 03 por NOMBRE DE FICHERO
+      # 1) Último run SUCCESS del 03 (por nombre de fichero de workflow)
       - name: Get latest successful run of 03
         id: getrun
         uses: actions/github-script@v7
         with:
           script: |
-            const wfFile = '03_participantes.yml'; // <--- nombre del fichero en .github/workflows/
+            const wfFile = '03_participantes.yml';
             const res = await github.rest.actions.listWorkflowRuns({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -41,11 +41,44 @@ jobs:
             }
             core.setOutput('run_id', res.data.workflow_runs[0].id);
 
-      - name: Download artifacts from 03
+      # 2) Listar artefactos disponibles en ese run, elegir IDs a descargar
+      - name: List artifacts in that run
+        id: listart
+        uses: actions/github-script@v7
+        env:
+          RUN_ID: ${{ steps.getrun.outputs.run_id }}
+        with:
+          script: |
+            const run_id = process.env.RUN_ID;
+            const res = await github.rest.actions.listWorkflowRunArtifacts({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: run_id
+            });
+            const arts = res.data.artifacts || [];
+            console.log("Artifacts in run:", arts.map(a => ({id:a.id,name:a.name,size:a.size_in_bytes,state:a.archive_download_url? 'ready':'?'})));
+
+            // Busca el artefacto objetivo
+            const TARGET = 'a03-participants-processed';
+            const exact = arts.filter(a => a.name === TARGET);
+            let ids = [];
+            if (exact.length) {
+              ids = exact.map(a => String(a.id));
+              core.setOutput('mode', 'target');
+              console.log(`Using target artifact '${TARGET}' with IDs:`, ids);
+            } else {
+              // Fallback: descargar todos
+              ids = arts.map(a => String(a.id));
+              core.setOutput('mode', 'all');
+              console.warn(`Target '${TARGET}' NOT FOUND. Fallback: downloading ALL artifacts:`, ids);
+            }
+            core.setOutput('artifact_ids', ids.join(','));
+
+      # 3) Descargar por IDs (uno o varios)
+      - name: Download artifacts (by IDs)
         uses: actions/download-artifact@v4
         with:
-          name: a03-participants-processed
-          run-id: ${{ steps.getrun.outputs.run_id }}
+          artifact-ids: ${{ steps.listart.outputs.artifact_ids }}
           merge-multiple: true
           path: ${{ env.OUT_DIR }}
 
@@ -73,59 +106,3 @@ jobs:
           name: a04-participantes-final
           path: ${{ env.OUT_DIR }}/participantes_completos_final.json
           if-no-files-found: error
-
-      # --- (Opcional) Publicación por FTPS ---
-      - name: FTPS list remote dir (pre)
-        if: always()
-        env:
-          FTP_SERVER:     ${{ secrets.FTP_SERVER }}
-          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
-          FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
-          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}   # p.ej. /www/NewWeb/Privado
-        shell: bash
-        run: |
-          set -euo pipefail
-          BASE="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/Competiciones/ListadoEventos"
-          echo "Listando: ${BASE}/"
-          curl --fail --ssl-reqd --user "${FTP_USERNAME}:${FTP_PASSWORD}" "${BASE}/" -l || true
-
-      - name: FTPS upload final JSON
-        env:
-          FTP_SERVER:     ${{ secrets.FTP_SERVER }}
-          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
-          FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
-          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          FILE="${{ env.OUT_DIR }}/participantes_completos_final.json"
-          if [ ! -f "$FILE" ]; then
-            echo "::error::No existe $FILE"; exit 1
-          fi
-          BASE="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/Competiciones/ListadoEventos"
-          echo "Subiendo: $FILE -> ${BASE}/participantes_completos_final.json"
-          curl --fail --ssl-reqd --ftp-create-dirs --disable-epsv --ftp-skip-pasv-ip \
-               --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
-               --upload-file "$FILE" \
-               "${BASE}/participantes_completos_final.json"
-
-      - name: FTPS verify (hash)
-        env:
-          FTP_SERVER:     ${{ secrets.FTP_SERVER }}
-          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
-          FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
-          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          BASE="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/Competiciones/ListadoEventos"
-          curl --fail --ssl-reqd --disable-epsv --ftp-skip-pasv-ip \
-               --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
-               --output remote.json "${BASE}/participantes_completos_final.json"
-
-          sha256sum "${{ env.OUT_DIR }}/participantes_completos_final.json" | awk '{print $1}' > local.sha256
-          sha256sum remote.json | awk '{print $1}' > remote.sha256
-          echo "Hash local : $(cut -d' ' -f1 local.sha256)"
-          echo "Hash remoto: $(cut -d' ' -f1 remote.sha256)"
-          diff -q local.sha256 remote.sha256
-          echo "OK: hash coincide"
