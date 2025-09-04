@@ -1,27 +1,25 @@
-name: 3 - Participantes (scrape + process)
+name: 03 Participantes (scrape + process)
 
 on:
-  workflow_run:
-    workflows: ["02 - INFO desde 01events"]   # puedes quitar esta dependencia si ya no te interesa
-    types: [completed]
+  schedule:
+    - cron: '3 4 * * *'   # 04:03 UTC
   workflow_dispatch: {}
 
-permissions:
-  contents: read
-  actions: read
-
 jobs:
-  run_03:
-    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') }}
+  run_and_upload:
     runs-on: ubuntu-latest
     env:
       TZ: Europe/Madrid
-      # Credenciales que tu script lee con dotenv o env
+      OUT_DIR: ./output
+      # Pasa credenciales y toggles al script 03 (evita .env en repo)
       FLOW_EMAIL: ${{ secrets.FLOW_EMAIL }}
       FLOW_PASS:  ${{ secrets.FLOW_PASS }}
       HEADLESS: "true"
       INCOGNITO: "true"
-      OUT_DIR: "./output"
+      FILE_PREFIX: "03"
+      # Límites opcionales:
+      LIMIT_EVENTS: "0"          # pon "2" si quieres acotar a 2 pruebas
+      LIMIT_PARTICIPANTS: "0"
 
     steps:
       - uses: actions/checkout@v4
@@ -32,41 +30,37 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.txt
 
-      - name: Install deps
+      - name: Instalar dependencias
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install selenium python-dotenv pandas python-dateutil numpy
+          # Si tienes requirements.txt úsalo; si no, instala mínimos necesarios:
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            pip install selenium webdriver-manager beautifulsoup4 python-dotenv pandas python-dateutil numpy
+          fi
 
-      - name: Setup Chrome (Selenium Manager gestionará el driver)
-        uses: browser-actions/setup-chrome@v1
-
-      - name: Run 03_eventosproxParticipantes.py (all)
+      - name: Ejecutar 03 (all: scrape + process)
         run: |
           set -euo pipefail
-          mkdir -p "$OUT_DIR"
-          SCRIPT_PATH="$(find . -maxdepth 6 -type f -name '03_eventosproxParticipantes.py' -print -quit)"
-          [ -n "$SCRIPT_PATH" ] || { echo "::error::No se encuentra 03_eventosproxParticipantes.py"; exit 1; }
-          echo "Using: $SCRIPT_PATH"
-          python "$SCRIPT_PATH" all
+          python "./03_eventosproxParticipantes.py" all
 
-      - name: Verify outputs & list
+      - name: Listado de outputs
         run: |
-          set -euo pipefail
-          ls -la ./output || true
-          test -f ./output/participantes.json || echo "::warning::No existe ./output/participantes.json (revisa logs del 03)"
+          echo "Contenido de $OUT_DIR:"
+          ls -la "$OUT_DIR" || true
 
+      # ⬇️ Artefactos que usará el 04
       - name: Upload processed participants (JSON+CSV)
         uses: actions/upload-artifact@v4
         with:
           name: a03-participants-processed
           path: |
+            ./output/03events_*.csv
+            ./output/03participantes_*.csv
             ./output/participantes.json
             ./output/participantes_*.json
-            ./output/events_*.csv
-            ./output/participants_*.csv
             ./output/participantes_procesado_*.csv
-            ./output/progress_*.json
+            ./output/03progress_*.json
           if-no-files-found: warn
-          retention-days: 10
