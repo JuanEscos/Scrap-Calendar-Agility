@@ -1,148 +1,85 @@
-import os, json, re, time
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+import os, sys, json, csv, re
+from glob import glob
 from datetime import datetime
+from pathlib import Path
 
-COMPETICIONES_FILE = "./output/competiciones_detalladas.json"
-PARTICIPANTS_DIR   = "./output/participants"
-OUTPUT_DIR         = "./output"
-FINAL_OUTPUT_FILE  = "./output/participantes_completos_final.json"
+# Entradas/salidas (puedes sobreescribir por args)
+OUT_DIR = os.getenv("OUT_DIR", "./output")
+FINAL_OUT = "./output/participantes_completos_final.json"
 
-def clean_filename(name):
-    return re.sub(r'[\\/*?:"<>|]', "_", name)
+def arg_or_default(i, default):
+    return sys.argv[i] if len(sys.argv) > i and sys.argv[i].strip() else default
 
-def parse_date(date_str):
-    if not date_str:
-        return ""
-    month_map = {'Jan':'Ene','Feb':'Feb','Mar':'Mar','Apr':'Abr','May':'May','Jun':'Jun',
-                 'Jul':'Jul','Aug':'Ago','Sep':'Sep','Oct':'Oct','Nov':'Nov','Dec':'Dic'}
-    for eng, esp in month_map.items():
-        date_str = date_str.replace(eng, esp)
-    return date_str
+OUT_DIR   = arg_or_default(1, OUT_DIR)
+FINAL_OUT = arg_or_default(2, FINAL_OUT)
 
-def pick(d, *names):
-    """Devuelve la primera key presente/no vacía."""
-    if not isinstance(d, dict):
-        return ""
-    for n in names:
-        if n in d and d[n] not in (None, "", []):
-            v = d[n]
-            return v.strip() if isinstance(v, str) else v
-    return ""
+def pick_first(*paths):
+    for p in paths:
+        if p and os.path.isfile(p):
+            return p
+    return None
 
-def load_participants_file(basename_candidates):
-    """Intenta abrir el primer fichero existente y devuelve una LISTA de participantes."""
-    for base in basename_candidates:
-        path = os.path.join(PARTICIPANTS_DIR, base)
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            # Acepta lista directa o wrapper con "participants"
-            if isinstance(data, dict) and "participants" in data:
-                participants = data["participants"]
-            else:
-                participants = data
-            # Debe ser lista
-            return participants if isinstance(participants, list) else []
-    return []
+def find_candidates(out_dir):
+    # 1) Preferido: JSON “último snapshot”
+    p1 = os.path.join(out_dir, "participantes.json")
+    # 2) Alternativa: JSON versionado por fecha (coge el más reciente)
+    dated = sorted(glob(os.path.join(out_dir, "participantes_*.json")))
+    p2 = dated[-1] if dated else None
+    # 3) Fallback: CSV procesado (coge el más reciente)
+    csvs = sorted(glob(os.path.join(out_dir, "participantes_procesado_*.csv")))
+    p3 = csvs[-1] if csvs else None
+    return p1, p2, p3
+
+def load_json(path):
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def load_csv_as_records(path):
+    rows=[]
+    with open(path, newline="", encoding="utf-8-sig") as f:
+        r=csv.DictReader(f)
+        for row in r:
+            # normaliza espacios
+            rows.append({k:(v.strip() if isinstance(v,str) else v) for k,v in row.items()})
+    return rows
 
 def main():
-    print("=== UNIÓN: competiciones + participantes ===")
+    os.makedirs(os.path.dirname(FINAL_OUT) or ".", exist_ok=True)
+    out_dir = OUT_DIR
+    print(f"=== UNION (estandarización) ===\nOUT_DIR: {out_dir}")
 
-    if not os.path.exists(COMPETICIONES_FILE):
-        print(f"❌ No existe {COMPETICIONES_FILE}")
-        return
+    p1, p2, p3 = find_candidates(out_dir)
+    inp = pick_first(p1, p2)
+    records = None
 
-    with open(COMPETICIONES_FILE, "r", encoding="utf-8") as f:
-        competiciones = json.load(f)
+    if inp:
+        print(f"Usando JSON: {inp}")
+        records = load_json(inp)
+        if not isinstance(records, list):
+            print("El JSON no es una lista; intento leer 'records' si existe…")
+            if isinstance(records, dict) and isinstance(records.get("records"), list):
+                records = records["records"]
+    else:
+        if p3:
+            print(f"No se encontró JSON. Convirtiendo CSV: {p3}")
+            records = load_csv_as_records(p3)
+        else:
+            print("❌ No se encontró ni participantes.json, ni participantes_*.json, ni participantes_procesado_*.csv")
+            sys.exit(1)
 
-    print(f"Competiciones cargadas: {len(competiciones)}")
-
-    participantes_completos = []
-
-    for comp in competiciones:
-        comp_id   = comp.get("id", "")
-        comp_nom  = comp.get("nombre", "Sin nombre")
-        comp_fech = comp.get("fechas", "")
-        comp_org  = comp.get("organizacion", "")
-        comp_club = comp.get("club", "")
-        comp_lug  = comp.get("lugar", "")
-
-        if not comp_id:
-            continue
-
-        safe_nom  = clean_filename(comp_nom)
-
-        # Archivos posibles (nuevo vs antiguo)
-        candidates = [
-            f"participants_{safe_nom}_{comp_id}.json",  # lo que espera 04
-            f"participants_{comp_id}.json"              # lo que guarda 03 actual
-        ]
-        participants = load_participants_file(candidates)
-
-        if not participants:
-            print(f"⚠️ Sin participantes para: {comp_nom}")
-            continue
-
-        print(f"📊 {comp_nom}: {len(participants)} participantes")
-
-        for p in participants:
-            # Normaliza "Competiciones"/"competitions" (dict o lista)
-            comps = p.get("Competiciones") or p.get("competitions") or {}
-            first_comp = {}
-            if isinstance(comps, dict) and comps:
-                first_comp = next((v for v in comps.values() if isinstance(v, dict)), {})
-            elif isinstance(comps, list) and comps and isinstance(comps[0], dict):
-                first_comp = comps[0]
-
-            item = {
-                # Competición
-                "Competicion_ID":        comp_id,
-                "Competicion_Nombre":    comp_nom,
-                "Competicion_Fechas":    comp_fech,
-                "Competicion_Organizacion": comp_org,
-                "Competicion_Club":      comp_club,
-                "Competicion_Lugar":     comp_lug,
-
-                # Participante (acepta ES/EN/minúsculas)
-                "Participante_ID":   pick(p, "Participante_ID","ID","id","participant_id"),
-                "Dorsal":            pick(p, "Dorsal","dorsal","bib"),
-                "Guia":              pick(p, "Guia","Guía","guide","handler"),
-                "Perro":             pick(p, "Perro","perro","dog","Nombre_perro"),
-                "Raza":              pick(p, "Raza","raza","breed"),
-                "Edad":              pick(p, "Edad","edad","age"),
-                "Genero":            pick(p, "Genero","género","sexo","gender","sex"),
-                "Altura_cm":         pick(p, "Altura_cm","altura_cm","altura","height_cm"),
-                "Pedigree":          pick(p, "Pedigree","pedigree"),
-                "Licencia":          pick(p, "Licencia","licencia","license"),
-                "Federacion":        pick(p, "Federacion","federacion","federation"),
-                "Club_Participante": pick(p, "Club","club","Club_Participante"),
-
-                # Del primer bloque de competiciones del participante
-                "Grado":             pick(first_comp, "Grado","grado","level"),
-                "Categoria":         pick(first_comp, "Categoria","categoria","category"),
-                "Fecha_1": "", "Fecha_2": "", "Fecha_3": "", "Fecha_4": "", "Fecha_5": "",
-                "Fecha_6": "", "Fecha_7": "", "Fecha_8": "", "Fecha_9": "", "Fecha_10": ""
-            }
-
-            # Rellenar hasta 10 fechas desde todas las competiciones del participante
-            fechas = []
-            if isinstance(comps, dict):
-                for d in comps.values():
-                    if isinstance(d, dict):
-                        fechas.append(parse_date(pick(d, "Fecha","fecha","date")))
-            elif isinstance(comps, list):
-                for d in comps:
-                    if isinstance(d, dict):
-                        fechas.append(parse_date(pick(d, "Fecha","fecha","date")))
-            for i, fch in enumerate(fechas[:10], start=1):
-                item[f"Fecha_{i}"] = fch
-
-            participantes_completos.append(item)
-
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    with open(FINAL_OUTPUT_FILE, "w", encoding="utf-8") as f:
-        json.dump(participantes_completos, f, ensure_ascii=False, indent=2)
-
-    print(f"✅ Guardados {len(participantes_completos)} en {FINAL_OUTPUT_FILE}")
+    # Sello y guardado
+    meta = {
+        "_generated_at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "_source": os.path.relpath(inp or p3, start="."),
+        "_count": len(records)
+    }
+    # Escribimos directamente el array (como antes), y añadimos metadata en comentario JSON si quieres
+    with open(FINAL_OUT, "w", encoding="utf-8") as f:
+        json.dump(records, f, ensure_ascii=False, indent=2)
+    print(f"✅ Escrito {FINAL_OUT} con {len(records)} registros")
+    print(f"Info: {json.dumps(meta, ensure_ascii=False)}")
 
 if __name__ == "__main__":
     main()
