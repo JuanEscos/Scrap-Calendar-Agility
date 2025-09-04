@@ -48,83 +48,23 @@ jobs:
         run: |
           printf 'Using 03 run: %s\n' "${{ steps.getrun.outputs.run_url }}"
 
-      # 2) Artefactos en ese run
-      - name: List artifacts in that run
-        id: listart
-        uses: actions/github-script@v7
-        env:
-          RUN_ID: ${{ steps.getrun.outputs.run_id }}
-        with:
-          script: |
-            const run_id = Number(process.env.RUN_ID);
-            const TARGET = 'a03-participants-processed';
-            const res = await github.rest.actions.listWorkflowRunArtifacts({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              run_id
-            });
-            const arts = res.data.artifacts || [];
-            console.log("Artifacts in run:", arts.map(a => ({id:a.id,name:a.name,size:a.size_in_bytes,expired:a.expired})));
-            const exact = arts.filter(a => a.name === TARGET && !a.expired);
-            if (exact.length) {
-              core.setOutput('artifact_ids', exact.map(a => String(a.id)).join(','));
-            } else if (arts.length) {
-              core.setOutput('artifact_ids', arts.filter(a => !a.expired).map(a => String(a.id)).join(','));
-            } else {
-              core.setOutput('artifact_ids', '');
-            }
-
-      # 3) Descargar artefactos del run (si hay)
-      - name: Download artifacts from run (by IDs)
-        if: steps.listart.outputs.artifact_ids != ''
+      # 2) Descargar TODOS los artefactos de ese run por patrón
+      - name: Download artifacts from 03 run (pattern "*")
         uses: actions/download-artifact@v4
         with:
-          artifact-ids: ${{ steps.listart.outputs.artifact_ids }}
+          run-id: ${{ steps.getrun.outputs.run_id }}
+          pattern: "*"
           merge-multiple: true
           path: ${{ env.OUT_DIR }}
 
-      # 4) Fallback repo-level si el run no tenía artefactos
-      - name: Find repo-level fallback artifact
-        id: repoart
-        if: steps.listart.outputs.artifact_ids == ''
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const TARGET = 'a03-participants-processed';
-            let page = 1, found = null;
-            while (page <= 10 && !found) {
-              const res = await github.rest.actions.listArtifactsForRepo({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                per_page: 100,
-                page
-              });
-              const arts = res.data.artifacts || [];
-              const candidates = arts.filter(a => a.name === TARGET && !a.expired);
-              if (candidates.length) {
-                candidates.sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
-                found = candidates[0];
-              }
-              if (arts.length < 100) break;
-              page++;
-            }
-            core.setOutput('artifact_ids', found ? String(found.id) : '');
-
-      - name: Download repo-level fallback artifact
-        if: steps.listart.outputs.artifact_ids == '' && steps.repoart.outputs.artifact_ids != ''
-        uses: actions/download-artifact@v4
-        with:
-          artifact-ids: ${{ steps.repoart.outputs.artifact_ids }}
-          merge-multiple: true
-          path: ${{ env.OUT_DIR }}
-
-      # 5) Error claro si no se descargó nada
+      # 3) Comprobar que realmente descargamos algo
       - name: Fail if nothing downloaded
-        if: steps.listart.outputs.artifact_ids == '' && steps.repoart.outputs.artifact_ids == ''
         shell: bash
         run: |
-          echo "::error::No se encontraron artefactos del 03 para descargar (ni en el run ni a nivel de repo)."
-          exit 1
+          set -euo pipefail
+          if ! ls -1 "$OUT_DIR"/* 1>/dev/null 2>&1; then
+            echo "::error::No se descargó ningún artefacto del 03. Verifica que el 03 sube 'a03-participants-processed'."; exit 1
+          fi
 
       - name: Debug listing
         shell: bash
