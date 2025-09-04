@@ -1,116 +1,72 @@
-name: 4 - Unión + FTPS
+name: 04 Union participantes
 
 on:
-  workflow_run:
-    workflows: ["3 - Participantes (scrape + process)"]
-    types: [completed]
   workflow_dispatch: {}
-
-permissions:
-  contents: read
-  actions: read
+  schedule:
+    - cron: "25 5 * * *"   # cuando quieras
 
 jobs:
-  union_and_upload:
-    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') }}
+  union:
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
     env:
-      TZ: Europe/Madrid
-      OUT_DIR: "./output"
+      OUT_DIR: ./output
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Ensure output dir
+        run: mkdir -p "$OUT_DIR"
+
+      # 1) Buscar el último run exitoso del workflow 03
+      - name: Get latest successful run of 03
+        id: getrun
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const wfFile = '03_participantes.yml'; // <-- nombre del fichero del workflow 03
+            const res = await github.rest.actions.listWorkflowRuns({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: wfFile,
+              status: 'success',
+              per_page: 1
+            });
+            if (!res.data.workflow_runs.length) {
+              core.setFailed(`No successful runs for ${wfFile}`);
+              return;
+            }
+            core.setOutput('run_id', res.data.workflow_runs[0].id);
+
+      # 2) Descargar artefactos del 03 por NOMBRE (tiene que coincidir con el upload del 03)
+      - name: Download artifacts from 03
+        uses: actions/download-artifact@v4
+        with:
+          name: a03-participants-processed           # <-- el mismo name que sube el 03
+          run-id: ${{ steps.getrun.outputs.run_id }} # <-- muy importante
+          merge-multiple: true
+          path: ${{ env.OUT_DIR }}
+
+      - name: Debug listing
+        run: |
+          echo "Contenido de $OUT_DIR:"
+          ls -la "$OUT_DIR" || true
+          echo "Ficheros:"
+          find "$OUT_DIR" -maxdepth 1 -type f -printf "%f\n" || true
 
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Download a03-participants-processed
-        if: ${{ github.event_name == 'workflow_run' }}
-        uses: actions/download-artifact@v4
+      - name: Run union
+        run: |
+          python ./04_eventosproxUnion.py "$OUT_DIR" "$OUT_DIR/participantes_completos_final.json"
+
+      - name: Upload final
+        uses: actions/upload-artifact@v4
         with:
-          name: a03-participants-processed
-          path: ./artifacts
-          run-id: ${{ github.event.workflow_run.id }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: (Manual) Fetch latest a03-participants-processed
-        if: ${{ github.event_name == 'workflow_dispatch' }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          sudo apt-get update && sudo apt-get install -y jq unzip
-          repo="${{ github.repository }}"
-          best=""
-          for page in 1 2 3 4 5; do
-            resp=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-                   "https://api.github.com/repos/${repo}/actions/artifacts?per_page=100&page=${page}")
-            ids=$(echo "$resp" | jq -r '.artifacts[] | select(.name=="a03-participants-processed" and .expired==false) | .id')
-            [ -z "$ids" ] || best=$(echo "$resp" | jq -r '.artifacts[] | select(.name=="a03-participants-processed" and .expired==false) | .id' | head -n1)
-            [ -n "$best" ] && break
-          done
-          [ -n "$best" ] || { echo "::error::No active artifact a03-participants-processed"; exit 1; }
-          mkdir -p artifacts
-          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -L \
-            "https://api.github.com/repos/${repo}/actions/artifacts/${best}/zip" -o a03.zip
-          unzip -o a03.zip -d ./artifacts
-          ls -la ./artifacts
-
-      - name: Prepare OUT_DIR
-        run: |
-          set -euo pipefail
-          mkdir -p "$OUT_DIR"
-          # mueve los outputs del 03 al OUT_DIR para que el 04 los encuentre
-          shopt -s nullglob
-          for f in ./artifacts/*; do
-            cp -f "$f" "$OUT_DIR"/
-          done
-          ls -la "$OUT_DIR"
-
-      - name: Run 04_eventosproxUnion.py
-        run: |
-          set -euo pipefail
-          SCRIPT_PATH="$(find . -maxdepth 4 -type f -name '04_eventosproxUnion.py' -print -quit)"
-          [ -n "$SCRIPT_PATH" ] || { echo "::error::No se encuentra 04_eventosproxUnion.py"; exit 1; }
-          python "$SCRIPT_PATH" "$OUT_DIR" "$OUT_DIR/participantes_completos_final.json"
-          test -f "$OUT_DIR/participantes_completos_final.json"
-
-      - name: (FTPS) Subir JSON final
-        env:
-          FTP_SERVER:     ${{ secrets.FTP_SERVER }}
-          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
-          FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
-          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
-        run: |
-          set -euo pipefail
-          FILE="$OUT_DIR/participantes_completos_final.json"
-          BASE="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/Competiciones/ListadoParticipantes"
-          TS="$(date -u +'%Y%m%dT%H%M%SZ')"
-          curl --fail --ssl-reqd --ftp-create-dirs --disable-epsv --ftp-skip-pasv-ip \
-               --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
-               --upload-file "$FILE" \
-               "${BASE}/participants_completos_final.json"
-          curl --fail --ssl-reqd --ftp-create-dirs --disable-epsv --ftp-skip-pasv-ip \
-               --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
-               --upload-file "$FILE" \
-               "${BASE}/participants_completos_final_${TS}.json"
-
-      - name: (FTPS) Verificar remoto por hash
-        env:
-          FTP_SERVER:     ${{ secrets.FTP_SERVER }}
-          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
-          FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
-          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
-        run: |
-          set -euo pipefail
-          FILE="$OUT_DIR/participantes_completos_final.json"
-          BASE="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/Competiciones/ListadoParticipantes"
-          curl --fail --ssl-reqd --disable-epsv --ftp-skip-pasv-ip \
-               --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
-               --output remote.json "${BASE}/participants_completos_final.json"
-          sha256sum "$FILE" | awk '{print $1}' > local.sha256
-          sha256sum remote.json | awk '{print $1}' > remote.sha256
-          echo "Local : $(cat local.sha256)"
-          echo "Remoto: $(cat remote.sha256)"
-          diff -q local.sha256 remote.sha256 && echo "OK: hash coincide"
+          name: a04-participantes-final
+          path: ${{ env.OUT_DIR }}/participantes_completos_final.json
+          if-no-files-found: error
