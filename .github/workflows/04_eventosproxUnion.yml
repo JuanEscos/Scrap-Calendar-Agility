@@ -1,15 +1,22 @@
-name: Eventos04Fin RSCE UNION diario
+name: 4 - Unión + FTPS
 
 on:
-  schedule:
-    - cron: '5 4 * * *'   # 05:05 UTC
+  workflow_run:
+    workflows: ["3 - Participantes (scrape + process)"]
+    types: [completed]
   workflow_dispatch: {}
 
+permissions:
+  contents: read
+  actions: read
+
 jobs:
-  run_and_upload:
+  union_and_upload:
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') }}
     runs-on: ubuntu-latest
     env:
       TZ: Europe/Madrid
+      OUT_DIR: "./output"
 
     steps:
       - uses: actions/checkout@v4
@@ -17,45 +24,59 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: pip
-          cache-dependency-path: requirements.txt
 
-      - name: Instalar dependencias (si existe requirements.txt)
-        run: |
-          set -euo pipefail
-          python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+      - name: Download a03-participants-processed
+        if: ${{ github.event_name == 'workflow_run' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: a03-participants-processed
+          path: ./artifacts
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Ejecutar script que genera el JSON
-        run: |
-          set -euo pipefail
-          python "./04_eventosproxUnion.py"   # <-- ajusta el nombre si tu script es distinto
-
-      - name: Localizar JSON y calcular hash
-        id: out
-        run: |
-          set -euo pipefail
-          FILE_PATH="$(find . -type f -name 'participantes_completos_final.json' -print -quit)"
-          if [ -z "$FILE_PATH" ]; then
-            echo "::error::No se encontró participantes_completos_final.json"; exit 1
-          fi
-          echo "file_path=$FILE_PATH" >> "$GITHUB_OUTPUT"
-          sha256sum "$FILE_PATH" | awk '{print $1}' > local.sha256
-          echo "local_hash=$(cut -d' ' -f1 local.sha256)" >> "$GITHUB_OUTPUT"
-
-      - name: Listar carpeta remota (antes de subir)
+      - name: (Manual) Fetch latest a03-participants-processed
+        if: ${{ github.event_name == 'workflow_dispatch' }}
         env:
-          FTP_SERVER:     ${{ secrets.FTP_SERVER }}
-          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
-          FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
-          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}   # ej: /www/NewWeb/Privado
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          BASE="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/Competiciones/ListadoEventos"
-          echo "Listando: ${BASE}/"
-          curl --fail --ssl-reqd --user "${FTP_USERNAME}:${FTP_PASSWORD}" "${BASE}/" -l || true
+          sudo apt-get update && sudo apt-get install -y jq unzip
+          repo="${{ github.repository }}"
+          best=""
+          for page in 1 2 3 4 5; do
+            resp=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+                   "https://api.github.com/repos/${repo}/actions/artifacts?per_page=100&page=${page}")
+            ids=$(echo "$resp" | jq -r '.artifacts[] | select(.name=="a03-participants-processed" and .expired==false) | .id')
+            [ -z "$ids" ] || best=$(echo "$resp" | jq -r '.artifacts[] | select(.name=="a03-participants-processed" and .expired==false) | .id' | head -n1)
+            [ -n "$best" ] && break
+          done
+          [ -n "$best" ] || { echo "::error::No active artifact a03-participants-processed"; exit 1; }
+          mkdir -p artifacts
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -L \
+            "https://api.github.com/repos/${repo}/actions/artifacts/${best}/zip" -o a03.zip
+          unzip -o a03.zip -d ./artifacts
+          ls -la ./artifacts
 
-      - name: Subir JSON por FTPS (TLS explicito en 21)
+      - name: Prepare OUT_DIR
+        run: |
+          set -euo pipefail
+          mkdir -p "$OUT_DIR"
+          # mueve los outputs del 03 al OUT_DIR para que el 04 los encuentre
+          shopt -s nullglob
+          for f in ./artifacts/*; do
+            cp -f "$f" "$OUT_DIR"/
+          done
+          ls -la "$OUT_DIR"
+
+      - name: Run 04_eventosproxUnion.py
+        run: |
+          set -euo pipefail
+          SCRIPT_PATH="$(find . -maxdepth 4 -type f -name '04_eventosproxUnion.py' -print -quit)"
+          [ -n "$SCRIPT_PATH" ] || { echo "::error::No se encuentra 04_eventosproxUnion.py"; exit 1; }
+          python "$SCRIPT_PATH" "$OUT_DIR" "$OUT_DIR/participantes_completos_final.json"
+          test -f "$OUT_DIR/participantes_completos_final.json"
+
+      - name: (FTPS) Subir JSON final
         env:
           FTP_SERVER:     ${{ secrets.FTP_SERVER }}
           FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
@@ -63,18 +84,19 @@ jobs:
           FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
         run: |
           set -euo pipefail
-          FILE="${{ steps.out.outputs.file_path }}"
-          if [ ! -f "$FILE" ]; then
-            echo "::error::El fichero local no existe: $FILE"; exit 1
-          fi
-          BASE="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/Competiciones/ListadoEventos"
-          echo "Subiendo: $FILE -> ${BASE}/participantes_completos_final.json"
+          FILE="$OUT_DIR/participantes_completos_final.json"
+          BASE="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/Competiciones/ListadoParticipantes"
+          TS="$(date -u +'%Y%m%dT%H%M%SZ')"
           curl --fail --ssl-reqd --ftp-create-dirs --disable-epsv --ftp-skip-pasv-ip \
                --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
                --upload-file "$FILE" \
-               "${BASE}/participantes_completos_final.json"
+               "${BASE}/participants_completos_final.json"
+          curl --fail --ssl-reqd --ftp-create-dirs --disable-epsv --ftp-skip-pasv-ip \
+               --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
+               --upload-file "$FILE" \
+               "${BASE}/participants_completos_final_${TS}.json"
 
-      - name: Verificar remoto (descargar y comparar hash)
+      - name: (FTPS) Verificar remoto por hash
         env:
           FTP_SERVER:     ${{ secrets.FTP_SERVER }}
           FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
@@ -82,14 +104,13 @@ jobs:
           FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
         run: |
           set -euo pipefail
-          BASE="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/Competiciones/ListadoEventos"
-          echo "Descargando: ${BASE}/participantes_completos_final.json"
+          FILE="$OUT_DIR/participantes_completos_final.json"
+          BASE="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/Competiciones/ListadoParticipantes"
           curl --fail --ssl-reqd --disable-epsv --ftp-skip-pasv-ip \
                --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
-               --output remote.json "${BASE}/participantes_completos_final.json"
-
+               --output remote.json "${BASE}/participants_completos_final.json"
+          sha256sum "$FILE" | awk '{print $1}' > local.sha256
           sha256sum remote.json | awk '{print $1}' > remote.sha256
-          echo "Hash local : ${{ steps.out.outputs.local_hash }}"
-          echo "Hash remoto: $(cut -d' ' -f1 remote.sha256)"
-          diff -q local.sha256 remote.sha256
-          echo "OK: hash coincide"
+          echo "Local : $(cat local.sha256)"
+          echo "Remoto: $(cat remote.sha256)"
+          diff -q local.sha256 remote.sha256 && echo "OK: hash coincide"
