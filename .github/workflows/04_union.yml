@@ -1,12 +1,14 @@
 name: 04 Union participantes
 
 on:
-  workflow_dispatch: {}
-  schedule:
-    - cron: "25 5 * * *"
+  workflow_run:
+    workflows: ["03 Participantes (scrape + process)"]  # <-- Debe coincidir EXACTAMENTE con el 'name' del 03
+    types: [completed]
 
 jobs:
   union:
+    # Solo ejecuta si el run del 03 terminó OK
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -21,59 +23,28 @@ jobs:
         shell: bash
         run: mkdir -p "$OUT_DIR"
 
-      # Intento 1: descargar por NOMBRE a nivel de repositorio (último con ese nombre)
-      - name: Download latest repo artifact by NAME
-        id: dl_by_name
-        uses: actions/download-artifact@v4
-        with:
-          name: a03-participants-processed                # <-- nombre que sube el 03
-          repository: ${{ github.repository }}            # explícito
-          merge-multiple: true
-          path: ${{ env.OUT_DIR }}
-      # Si falla, no queremos abortar aún; comprobamos después si hay ficheros
-        continue-on-error: true
-
-      # Intento 2 (fallback): si no hay nada, descarga TODO lo que haya del run más reciente exitoso del 03
-      - name: Get latest successful run of 03 (for fallback)
-        id: getrun
-        if: failure() || steps.dl_by_name.outcome == 'failure'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const wfFile = '03_participantes.yml';
-            const res = await github.rest.actions.listWorkflowRuns({
-              owner: context.repo.owner, repo: context.repo.repo,
-              workflow_id: wfFile, status: 'success', per_page: 1
-            });
-            if (!res.data.workflow_runs.length) {
-              core.setFailed(`No successful runs for ${wfFile}`);
-              return;
-            }
-            core.setOutput('run_id', String(res.data.workflow_runs[0].id));
-            core.setOutput('run_url', res.data.workflow_runs[0].html_url);
-
-      - name: Echo selected run (fallback)
-        if: steps.getrun.outputs.run_id
+      - name: Log triggering run
         shell: bash
         run: |
-          printf 'Using 03 run (fallback): %s\n' "${{ steps.getrun.outputs.run_url }}"
+          echo "Triggered by run: ${{ github.event.workflow_run.id }}"
+          echo "From workflow  : ${{ github.event.workflow.name }}"
+          echo "Conclusion      : ${{ github.event.workflow_run.conclusion }}"
 
-      - name: Download ALL artifacts from selected 03 run (pattern "*")
-        if: steps.getrun.outputs.run_id
+      # 🔽 Descarga del run que nos disparó (la pieza clave)
+      - name: Download artifacts from triggering 03 run
         uses: actions/download-artifact@v4
         with:
-          run-id: ${{ steps.getrun.outputs.run_id }}
-          pattern: "*"
+          run-id: ${{ github.event.workflow_run.id }}
+          name: a03-participants-processed
           merge-multiple: true
           path: ${{ env.OUT_DIR }}
 
-      # Falla claro si sigue sin haber nada
       - name: Fail if nothing downloaded
         shell: bash
         run: |
           set -euo pipefail
           if ! ls -1 "$OUT_DIR"/* 1>/dev/null 2>&1; then
-            echo "::error::No se descargó ningún artefacto. Verifica que el 03 sube 'a03-participants-processed' o que el run tiene artefactos."
+            echo "::error::No se descargó ningún artefacto del 03 (run ${GITHUB_EVENT_PATH})."
             exit 1
           fi
 
