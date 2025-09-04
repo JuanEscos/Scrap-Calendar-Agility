@@ -39,7 +39,7 @@ jobs:
             pip install selenium webdriver-manager beautifulsoup4 python-dotenv pandas python-dateutil numpy
           fi
 
-      - name: Ejecutar 03 (all: scrape + process)
+      - name: "Ejecutar 03 (all: scrape + process)"
         shell: bash
         run: |
           set -euo pipefail
