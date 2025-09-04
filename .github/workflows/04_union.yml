@@ -27,7 +27,7 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const wfFile = '03_participantes.yml'; // nombre del archivo en .github/workflows/
+            const wfFile = '03_participantes.yml';
             const res = await github.rest.actions.listWorkflowRuns({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -45,7 +45,8 @@ jobs:
 
       - name: Echo selected run
         shell: bash
-        run: echo "Using 03 run: ${{ steps.getrun.outputs.run_url }}"
+        run: |
+          printf 'Using 03 run: %s\n' "${{ steps.getrun.outputs.run_url }}"
 
       # 2) Artefactos en ese run
       - name: List artifacts in that run
@@ -67,13 +68,10 @@ jobs:
             const exact = arts.filter(a => a.name === TARGET && !a.expired);
             if (exact.length) {
               core.setOutput('artifact_ids', exact.map(a => String(a.id)).join(','));
-              core.setOutput('has_target', 'true');
             } else if (arts.length) {
               core.setOutput('artifact_ids', arts.filter(a => !a.expired).map(a => String(a.id)).join(','));
-              core.setOutput('has_target', 'false');
             } else {
               core.setOutput('artifact_ids', '');
-              core.setOutput('has_target', 'false');
             }
 
       # 3) Descargar artefactos del run (si hay)
@@ -110,11 +108,7 @@ jobs:
               if (arts.length < 100) break;
               page++;
             }
-            if (found) {
-              core.setOutput('artifact_ids', String(found.id));
-            } else {
-              core.setOutput('artifact_ids', '');
-            }
+            core.setOutput('artifact_ids', found ? String(found.id) : '');
 
       - name: Download repo-level fallback artifact
         if: steps.listart.outputs.artifact_ids == '' && steps.repoart.outputs.artifact_ids != ''
