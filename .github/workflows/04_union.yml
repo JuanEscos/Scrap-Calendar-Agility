@@ -165,11 +165,11 @@ jobs:
           curl --fail --ssl-reqd --ftp-create-dirs --disable-epsv --ftp-skip-pasv-ip \
                --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
                --upload-file "$FILE" \
-               "${BASE}/participants_completos_final.json"
+               "${BASE}/participantes_completos_final.json"
           curl --fail --ssl-reqd --ftp-create-dirs --disable-epsv --ftp-skip-pasv-ip \
                --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
                --upload-file "$FILE" \
-               "${BASE}/participants_completos_final_${TS}.json"
+               "${BASE}/participantes_completos_final_${TS}.json"
 
       - name: (FTPS) Verificar remoto (descargar y comparar hash)
         env:
@@ -182,7 +182,7 @@ jobs:
           BASE="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/Competiciones/ListadoEventos"
           curl --fail --ssl-reqd --disable-epsv --ftp-skip-pasv-ip \
                --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
-               --output remote.json "${BASE}/participants_completos_final.json"
+               --output remote.json "${BASE}/participantes_completos_final.json"
           sha256sum ./output/participantes_completos_final.json | awk '{print $1}' > local.sha256
           sha256sum remote.json | awk '{print $1}' > remote.sha256
           echo "Hash local : $(cat local.sha256)"
