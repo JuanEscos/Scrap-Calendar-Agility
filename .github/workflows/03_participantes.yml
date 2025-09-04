@@ -32,7 +32,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m pip install --upgrade pip
+          python -m pip install --upgrade pip setuptools wheel
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt
           else
@@ -51,6 +51,18 @@ jobs:
           echo "Contenido de $OUT_DIR:"
           ls -la "$OUT_DIR" || true
 
+      # 🔒 Asegura que realmente hay archivos que coinciden con los patrones
+      - name: Assert outputs exist
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=( ./output/03events_*.csv ./output/03participantes_*.csv ./output/participantes*.json ./output/participantes_procesado_*.csv )
+          echo "Ficheros a subir: ${files[*]:-<ninguno>}"
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::error::No hay ficheros de salida para subir (revisa nombres y OUT_DIR)"; exit 1
+          fi
+
       - name: Upload processed participants (JSON+CSV)
         uses: actions/upload-artifact@v4
         with:
@@ -62,4 +74,4 @@ jobs:
             ./output/participantes_*.json
             ./output/participantes_procesado_*.csv
             ./output/03progress_*.json
-          if-no-files-found: warn
+          if-no-files-found: error
