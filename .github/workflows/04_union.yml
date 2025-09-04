@@ -21,7 +21,7 @@ jobs:
         shell: bash
         run: mkdir -p "$OUT_DIR"
 
-      # 1) Último run SUCCESS del 03 (por nombre de fichero de workflow)
+      # 1) Último run SUCCESS del 03 (por NOMBRE DE FICHERO)
       - name: Get latest successful run of 03
         id: getrun
         uses: actions/github-script@v7
@@ -39,9 +39,14 @@ jobs:
               core.setFailed(`No successful runs for ${wfFile}`);
               return;
             }
-            core.setOutput('run_id', res.data.workflow_runs[0].id);
+            const run = res.data.workflow_runs[0];
+            core.setOutput('run_id', run.id);
+            core.setOutput('run_url', run.html_url);
 
-      # 2) Listar artefactos disponibles en ese run, elegir IDs a descargar
+      - name: Echo selected run
+        run: echo "Using 03 run: ${{ steps.getrun.outputs.run_url }}"
+
+      # 2) Listar artefactos de ese run
       - name: List artifacts in that run
         id: listart
         uses: actions/github-script@v7
@@ -50,35 +55,68 @@ jobs:
         with:
           script: |
             const run_id = process.env.RUN_ID;
+            const TARGET = 'a03-participants-processed';
             const res = await github.rest.actions.listWorkflowRunArtifacts({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              run_id: run_id
+              run_id
             });
             const arts = res.data.artifacts || [];
-            console.log("Artifacts in run:", arts.map(a => ({id:a.id,name:a.name,size:a.size_in_bytes,state:a.archive_download_url? 'ready':'?'})));
-
-            // Busca el artefacto objetivo
-            const TARGET = 'a03-participants-processed';
+            console.log("Artifacts in run:", arts.map(a => ({id:a.id,name:a.name,size:a.size_in_bytes})));
             const exact = arts.filter(a => a.name === TARGET);
-            let ids = [];
             if (exact.length) {
-              ids = exact.map(a => String(a.id));
-              core.setOutput('mode', 'target');
-              console.log(`Using target artifact '${TARGET}' with IDs:`, ids);
+              core.setOutput('artifact_ids', exact.map(a => String(a.id)).join(','));
+              core.setOutput('mode', 'run_exact');
+            } else if (arts.length) {
+              core.setOutput('artifact_ids', arts.map(a => String(a.id)).join(','));
+              core.setOutput('mode', 'run_all');
             } else {
-              // Fallback: descargar todos
-              ids = arts.map(a => String(a.id));
-              core.setOutput('mode', 'all');
-              console.warn(`Target '${TARGET}' NOT FOUND. Fallback: downloading ALL artifacts:`, ids);
+              core.setOutput('artifact_ids', '');
+              core.setOutput('mode', 'empty');
             }
-            core.setOutput('artifact_ids', ids.join(','));
 
-      # 3) Descargar por IDs (uno o varios)
+      # 3) Fallback: si ese run no tiene artefactos, busca a nivel repo el último con ese nombre
+      - name: Fallback to repo-level artifact
+        id: repoart
+        if: steps.listart.outputs.artifact_ids == ''
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const TARGET = 'a03-participants-processed';
+            // Paginar por si acaso (máx 100 por página)
+            let page = 1, found = null;
+            while (page < 10 && !found) {
+              const res = await github.rest.actions.listArtifactsForRepo({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                per_page: 100,
+                page
+              });
+              const arts = res.data.artifacts || [];
+              // Filtra por nombre y que no estén expirados
+              const candidates = arts.filter(a => a.name === TARGET && !a.expired);
+              if (candidates.length) {
+                // Toma el más nuevo
+                candidates.sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
+                found = candidates[0];
+                break;
+              }
+              if (!res.data.total_count || arts.length < 100) break;
+              page++;
+            }
+            if (found) {
+              core.setOutput('artifact_ids', String(found.id));
+              core.setOutput('mode', 'repo_fallback');
+              console.log("Using repo-level artifact:", {id:found.id, name:found.name, created_at:found.created_at});
+            } else {
+              core.setFailed("No repo-level artifact named 'a03-participants-processed' found.");
+            }
+
+      # 4) Descargar por IDs (del run o repo, según el caso)
       - name: Download artifacts (by IDs)
         uses: actions/download-artifact@v4
         with:
-          artifact-ids: ${{ steps.listart.outputs.artifact_ids }}
+          artifact-ids: ${{ steps.listart.outputs.artifact_ids != '' && steps.listart.outputs.artifact_ids || steps.repoart.outputs.artifact_ids }}
           merge-multiple: true
           path: ${{ env.OUT_DIR }}
 
