@@ -964,32 +964,45 @@ import pandas as pd
 import numpy as np
 from dateutil import parser
 
-def _resolve_csv(preferred_today_pattern: str, fallback_pattern: str, extra_dirs=()):
+def _resolve_csv(preferred_today_patterns, fallback_patterns, extra_dirs=()):
+    # Acepta str o lista[str]
+    if isinstance(preferred_today_patterns, str):
+        preferred_today_patterns = [preferred_today_patterns]
+    if isinstance(fallback_patterns, str):
+        fallback_patterns = [fallback_patterns]
+
     parent = Path(OUT_DIR)
     search_dirs = [parent, *map(Path, extra_dirs)]
-    def glob_all(pattern):
+
+    def glob_all(patterns):
         out = []
         for d in search_dirs:
-            if d.exists():
-                out += list(d.glob(pattern))
+            if not d.exists():
+                continue
+            for pat in patterns:
+                out += list(d.glob(pat))
         return out
 
-    cand_today = glob_all(preferred_today_pattern)
+    cand_today = glob_all(preferred_today_patterns)
     if cand_today:
-        cand_today.sort(key=lambda p: p.stat().st_mtime)
+        cand_today.sort(key=lambda p: (p.stat().st_mtime, p.name))
         return cand_today[-1]
 
-    candidates = glob_all(fallback_pattern)
+    candidates = glob_all(fallback_patterns)
     if not candidates:
         raise FileNotFoundError(
-            f"No se encontró ningún CSV con patrón '{preferred_today_pattern}' ni '{fallback_pattern}' "
+            "No se encontró ningún CSV con patrón "
+            f"'{ ' | '.join(preferred_today_patterns) }' ni '{ ' | '.join(fallback_patterns) }' "
             f"en: " + ", ".join(str(d) for d in search_dirs)
         )
+
     def date_key(p: Path):
         m = re.search(r"(\d{4}-\d{2}-\d{2})", p.name)
         return m.group(1) if m else "0000-00-00"
+
     candidates.sort(key=lambda p: (date_key(p), p.stat().st_mtime))
     return candidates[-1]
+
 
 def to_spanish_dd_mm_yyyy(val):
     if not isinstance(val, str) or not val.strip():
@@ -1151,12 +1164,17 @@ def robust_parse_mangas(manga_val, federacion_val):
 def process_main():
     _print_effective_config()
 
-    events_csv = _resolve_csv(preferred_today_pattern=f"events_{DATE_STR}*.csv",
-                              fallback_pattern="events_*.csv",
-                              extra_dirs=[OUT_DIR])
-    parts_csv  = _resolve_csv(preferred_today_pattern=f"participants_{DATE_STR}*.csv",
-                              fallback_pattern="participants_*.csv",
-                              extra_dirs=[OUT_DIR])
+    events_csv = _resolve_csv(
+        preferred_today_patterns=[f"03events_{DATE_STR}*.csv", f"events_{DATE_STR}*.csv"],
+        fallback_patterns=["03events_*.csv", "events_*.csv"],
+        extra_dirs=[OUT_DIR]
+    )
+    
+    parts_csv  = _resolve_csv(
+        preferred_today_patterns=[f"03participantes_{DATE_STR}*.csv", f"participants_{DATE_STR}*.csv", f"participantes_{DATE_STR}*.csv"],
+        fallback_patterns=["03participantes_*.csv", "participants_*.csv", "participantes_*.csv"],
+        extra_dirs=[OUT_DIR]
+    )
 
     output_csv = next_free_path(os.path.join(OUT_DIR, f"participantes_procesado_{DATE_STR}.csv"))
 
