@@ -7,31 +7,23 @@ Subcomandos:
   - process : genera participantes_procesado_YYYY-MM-DD.csv (versionado)
   - all     : scrape + process
 
-Además: al terminar 'process' (o 'all'), imprime en Terminal las
-“pruebas próximas” por fecha (ordenadas y agrupadas).
+ENV obligatorias:
+  FLOW_EMAIL, FLOW_PASS
+
+ENV opcionales (recomendado):
+  HEADLESS=true / INCOGNITO=true
+  OUT_DIR=./output
+  SHOW_CONFIG=true
+  FILE_PREFIX=03                      # prefijo para CSV/JSON del día (por defecto "03")
+  LIMIT_EVENTS=0                      # límite de eventos a scrapear (0 = sin límite)
+  LIMIT_PARTICIPANTS=0                # límite de participantes por evento (0 = sin límite)
+  UPCOMING_LIMIT=0                    # límite de filas en el resumen de “Pruebas próximas” (0 = sin límite)
+  MAX_SCROLLS=24, SCROLL_WAIT_S=2.0, SLOW_MIN_S=1.0, SLOW_MAX_S=3.0, ...
+  CHROME_BINARY=/ruta/google-chrome
+  CHROMEDRIVER_PATH=/ruta/chromedriver
 
 Requisitos:
   pip install selenium python-dotenv pandas python-dateutil numpy
-
-Variables .env (junto al script):
-  FLOW_EMAIL=...
-  FLOW_PASS=...
-  HEADLESS=true
-  INCOGNITO=true
-  OUT_DIR=./ListaEventos
-  SHOW_CONFIG=true
-  CHROME_BINARY=/ruta/a/google-chrome
-  CHROMEDRIVER_PATH=/ruta/a/chromedriver
-
-  # NUEVO (opcional):
-  RESUME=true                 # reanudar si existe progreso del día
-  SLOW_MIN_S=1.0              # pausa mínima aleatoria entre acciones clave
-  SLOW_MAX_S=3.0              # pausa máxima aleatoria entre acciones clave
-  MAX_SCROLLS=24
-  SCROLL_WAIT_S=2.0
-  PER_PART_TIMEOUT_S=10
-  RENDER_POLL_S=0.25
-  MAX_EVENT_SECONDS=1800
 """
 
 import os, csv, sys, re, traceback, unicodedata, argparse, json
@@ -84,10 +76,18 @@ CLICK_RETRIES      = _env_int("CLICK_RETRIES", 3)
 PER_PART_TIMEOUT_S = _env_float("PER_PART_TIMEOUT_S", 10)
 RENDER_POLL_S      = _env_float("RENDER_POLL_S", 0.25)
 MAX_EVENT_SECONDS  = _env_int("MAX_EVENT_SECONDS", 1800)
-OUT_DIR            = os.path.abspath(os.getenv("OUT_DIR", "./ListaEventos"))
+OUT_DIR            = os.path.abspath(os.getenv("OUT_DIR", "./output"))
 RESUME             = _env_bool("RESUME", True)
 SLOW_MIN_S         = _env_float("SLOW_MIN_S", 1.0)
 SLOW_MAX_S         = _env_float("SLOW_MAX_S", 3.0)
+
+# Límites (nuevo)
+LIMIT_EVENTS        = _env_int("LIMIT_EVENTS", 0)          # 0 = sin límite
+LIMIT_PARTICIPANTS  = _env_int("LIMIT_PARTICIPANTS", 0)    # 0 = sin límite
+UPCOMING_LIMIT      = _env_int("UPCOMING_LIMIT", 0)        # 0 = sin límite
+
+# Prefijo de ficheros del día (por defecto "03" para encajar con tus logs)
+FILE_PREFIX         = os.getenv("FILE_PREFIX", "03").strip()
 
 os.makedirs(OUT_DIR, exist_ok=True)
 
@@ -95,9 +95,9 @@ DATE_STR = datetime.now().strftime("%Y-%m-%d")
 UUID_RE  = re.compile(r"/zone/events/([0-9a-fA-F-]{36})(?:/.*)?$")
 
 # Ficheros del día (estables para reanudar)
-CSV_EVENT_PATH = os.path.join(OUT_DIR, f"03events_{DATE_STR}.csv")
-CSV_PART_PATH  = os.path.join(OUT_DIR, f"03participantes_{DATE_STR}.csv")
-PROGRESS_PATH  = os.path.join(OUT_DIR, f"03progress_{DATE_STR}.json")
+CSV_EVENT_PATH = os.path.join(OUT_DIR, f"{FILE_PREFIX}events_{DATE_STR}.csv")
+CSV_PART_PATH  = os.path.join(OUT_DIR, f"{FILE_PREFIX}participantes_{DATE_STR}.csv")
+PROGRESS_PATH  = os.path.join(OUT_DIR, f"{FILE_PREFIX}progress_{DATE_STR}.json")
 
 # ----------------------------- Utilidades logging / pausas -----------------------------
 def _print_effective_config():
@@ -117,6 +117,10 @@ def _print_effective_config():
     print(f"RESUME               = {RESUME}")
     print(f"SLOW_MIN_S           = {SLOW_MIN_S}")
     print(f"SLOW_MAX_S           = {SLOW_MAX_S}")
+    print(f"FILE_PREFIX          = {FILE_PREFIX}")
+    print(f"LIMIT_EVENTS         = {LIMIT_EVENTS}")
+    print(f"LIMIT_PARTICIPANTS   = {LIMIT_PARTICIPANTS}")
+    print(f"UPCOMING_LIMIT       = {UPCOMING_LIMIT}")
     print(f"CHROME_BINARY        = {os.getenv('CHROME_BINARY') or ''}")
     print(f"CHROMEDRIVER_PATH    = {os.getenv('CHROMEDRIVER_PATH') or ''}")
     print("=======================")
@@ -335,7 +339,7 @@ def _clean(s: str) -> str:
     s = unicodedata.normalize("NFKC", s)
     s = EMOJI_RE.sub("", s)
     s = re.sub(r"[ \t]+", " ", s)
-    return s.strip(" \t\r\n-•*·:;")
+    return s.strip(" \t\r\n-•*·:")
 
 _BAD_JUDGE = re.compile(r"(aguardar|por\s+confirmar|tbd|to\s+be\s+confirmed)", re.I)
 def _looks_like_name(s: str) -> bool:
@@ -751,13 +755,18 @@ def scrape_main():
         _login(driver, By, WebDriverWait, EC)
         urls_by_uuid = _collect_event_urls(driver, By, WebDriverWait, EC)
         log(f"Eventos (UUIDs) encontrados: {len(urls_by_uuid)}")
+
+        # NUEVO: limitar número de eventos a procesar
+        if LIMIT_EVENTS and LIMIT_EVENTS > 0:
+            urls_by_uuid = dict(list(urls_by_uuid.items())[:LIMIT_EVENTS])
+            log(f"Aplicado LIMIT_EVENTS={LIMIT_EVENTS}: procesaré {len(urls_by_uuid)} eventos")
+
         state["total_found"] = len(urls_by_uuid)
         _save_progress(state)
 
         # --- Itera eventos (respetando progreso) ---
         for uuid, pair in urls_by_uuid.items():
             if _is_event_done(state, uuid):
-                # Ya se terminó este evento anteriormente
                 continue
 
             start_event_ts = time.time()
@@ -833,12 +842,16 @@ def scrape_main():
                     total = len(booking_ids)
                     log(f"Toggles/participantes detectados: {total}")
 
-                    # Reanudar dentro del evento
                     start_idx = _get_last_part_index(state, uuid) + 1  # 1-based
                     if start_idx > total:
                         start_idx = total + 1
 
                     for idx, pid in enumerate(booking_ids, start=1):
+                        # NUEVO: limitar participantes por evento
+                        if LIMIT_PARTICIPANTS and idx > LIMIT_PARTICIPANTS:
+                            log(f"LIMIT_PARTICIPANTS={LIMIT_PARTICIPANTS} alcanzado; corto participantes de este evento")
+                            break
+
                         if idx < start_idx:
                             continue  # ya procesado
 
@@ -847,6 +860,7 @@ def scrape_main():
 
                         if not pid:
                             _set_last_part_index(state, uuid, idx)
+                            slow_pause(0.2, 0.5)
                             continue
 
                         block_el = _click_toggle_by_pid(
@@ -965,7 +979,7 @@ import numpy as np
 from dateutil import parser
 
 def _resolve_csv(preferred_today_patterns, fallback_patterns, extra_dirs=()):
-    # Acepta str o lista[str]
+    """Acepta lista de patrones. Busca primero el 'de hoy' y si no, fallback."""
     if isinstance(preferred_today_patterns, str):
         preferred_today_patterns = [preferred_today_patterns]
     if isinstance(fallback_patterns, str):
@@ -1002,7 +1016,6 @@ def _resolve_csv(preferred_today_patterns, fallback_patterns, extra_dirs=()):
 
     candidates.sort(key=lambda p: (date_key(p), p.stat().st_mtime))
     return candidates[-1]
-
 
 def to_spanish_dd_mm_yyyy(val):
     if not isinstance(val, str) or not val.strip():
@@ -1164,15 +1177,16 @@ def robust_parse_mangas(manga_val, federacion_val):
 def process_main():
     _print_effective_config()
 
+    # Aceptar prefijos con o sin "03"
     events_csv = _resolve_csv(
-        preferred_today_patterns=[f"03events_{DATE_STR}*.csv", f"events_{DATE_STR}*.csv"],
-        fallback_patterns=["03events_*.csv", "events_*.csv"],
+        preferred_today_patterns=[f"{FILE_PREFIX}events_{DATE_STR}*.csv", f"events_{DATE_STR}*.csv"],
+        fallback_patterns=[f"{FILE_PREFIX}events_*.csv", "events_*.csv"],
         extra_dirs=[OUT_DIR]
     )
-    
+
     parts_csv  = _resolve_csv(
-        preferred_today_patterns=[f"03participantes_{DATE_STR}*.csv", f"participants_{DATE_STR}*.csv", f"participantes_{DATE_STR}*.csv"],
-        fallback_patterns=["03participantes_*.csv", "participants_*.csv", "participantes_*.csv"],
+        preferred_today_patterns=[f"{FILE_PREFIX}participantes_{DATE_STR}*.csv", f"participants_{DATE_STR}*.csv", f"participantes_{DATE_STR}*.csv"],
+        fallback_patterns=[f"{FILE_PREFIX}participantes_*.csv", "participants_*.csv", "participantes_*.csv"],
         extra_dirs=[OUT_DIR]
     )
 
@@ -1282,16 +1296,15 @@ def process_main():
     if len(final) != len(participants):
         print(f"AVISO: Filas finales {len(final)} != participants {len(participants)}. Guardo igualmente para inspección.")
 
+    # CSV + JSON
+    output_csv = next_free_path(os.path.join(OUT_DIR, f"participantes_procesado_{DATE_STR}.csv"))
     final.to_csv(output_csv, index=False, encoding="utf-8-sig")
     print(f"OK -> {output_csv} | filas = {len(final)}")
-    
-    # === Exportar también a JSON ===
-    json_dated = os.path.join(OUT_DIR, f"03participantes_{DATE_STR}.json")
-    json_latest = os.path.join(OUT_DIR, "03participantes.json")
-    
+
+    json_dated  = os.path.join(OUT_DIR, f"participantes_{DATE_STR}.json")
+    json_latest = os.path.join(OUT_DIR, "participantes.json")
     final.to_json(json_dated, orient="records", force_ascii=False, indent=2)
     final.to_json(json_latest, orient="records", force_ascii=False, indent=2)
-    
     print(f"OK -> {json_dated} (versionado por fecha)")
     print(f"OK -> {json_latest} (último snapshot)")
 
@@ -1343,6 +1356,10 @@ def _print_upcoming_from_events(ev_df: pd.DataFrame, horizon_days: int = 60):
 
     mask = df["start_date"].notna() & (df["start_date"] >= today) & (df["start_date"] <= horizon)
     up = df.loc[mask].sort_values("start_date")
+
+    # NUEVO: límite de filas en el resumen
+    if UPCOMING_LIMIT and UPCOMING_LIMIT > 0:
+        up = up.head(UPCOMING_LIMIT)
 
     if up.empty:
         print(f"No hay pruebas en los próximos {horizon_days} días.")
