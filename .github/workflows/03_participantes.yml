@@ -50,14 +50,20 @@ jobs:
         run: |
           echo "Contenido de $OUT_DIR:"
           ls -la "$OUT_DIR" || true
+          echo "Coincidencias previstas:"
+          ls -1 ./output/*events_*.csv 2>/dev/null || true
+          ls -1 ./output/*participantes_*.csv 2>/dev/null || true
+          ls -1 ./output/participantes*.json 2>/dev/null || true
+          ls -1 ./output/*progress_*.json 2>/dev/null || true
+          ls -1 ./output/participantes_procesado_*.csv 2>/dev/null || true
 
-      # 🔒 Asegura que realmente hay archivos que coinciden con los patrones
+      # Garantiza que hay algo que subir (si no, falla el 03)
       - name: Assert outputs exist
         shell: bash
         run: |
           set -euo pipefail
           shopt -s nullglob
-          files=( ./output/03events_*.csv ./output/03participantes_*.csv ./output/participantes*.json ./output/participantes_procesado_*.csv )
+          files=( ./output/*events_*.csv ./output/*participantes_*.csv ./output/participantes*.json ./output/participantes_procesado_*.csv )
           echo "Ficheros a subir: ${files[*]:-<ninguno>}"
           if [ ${#files[@]} -eq 0 ]; then
             echo "::error::No hay ficheros de salida para subir (revisa nombres y OUT_DIR)"; exit 1
@@ -68,10 +74,11 @@ jobs:
         with:
           name: a03-participants-processed
           path: |
-            ./output/03events_*.csv
-            ./output/03participantes_*.csv
+            ./output/*events_*.csv
+            ./output/*participantes_*.csv
             ./output/participantes.json
             ./output/participantes_*.json
             ./output/participantes_procesado_*.csv
-            ./output/03progress_*.json
+            ./output/*progress_*.json
           if-no-files-found: error
+          retention-days: 5
