@@ -1,8 +1,8 @@
-name: 3 - Participantes por evento
+name: 3 - Participantes (scrape + process)
 
 on:
   workflow_run:
-    workflows: ["02 - INFO desde 01events"]
+    workflows: ["02 - INFO desde 01events"]   # puedes quitar esta dependencia si ya no te interesa
     types: [completed]
   workflow_dispatch: {}
 
@@ -11,25 +11,20 @@ permissions:
   actions: read
 
 jobs:
-  produce_participants:
+  run_03:
     if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') }}
     runs-on: ubuntu-latest
     env:
       TZ: Europe/Madrid
-      # Variables de entorno (por si tu script las toma via os.getenv además del .env)
+      # Credenciales que tu script lee con dotenv o env
       FLOW_EMAIL: ${{ secrets.FLOW_EMAIL }}
-      FLOW_PASS: ${{ secrets.FLOW_PASS }}
+      FLOW_PASS:  ${{ secrets.FLOW_PASS }}
       HEADLESS: "true"
       INCOGNITO: "true"
+      OUT_DIR: "./output"
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Debug repo tree
-        run: |
-          echo "BRANCH: $GITHUB_REF_NAME"
-          git ls-files | sed 's/^/ - /' | head -n 200
-          echo "----"; ls -la; echo "---- FIN LISTADO ----"
 
       - uses: actions/setup-python@v5
         with:
@@ -37,183 +32,41 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.txt
 
-      - name: Install deps (selenium, bs4, dotenv, etc.)
+      - name: Install deps
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install "selenium==4.*" "webdriver-manager==4.*" beautifulsoup4 lxml python-dotenv
+          pip install selenium python-dotenv pandas python-dateutil numpy
 
-      - name: Setup Chrome
+      - name: Setup Chrome (Selenium Manager gestionará el driver)
         uses: browser-actions/setup-chrome@v1
 
-      - name: Check Chrome & libs
+      - name: Run 03_eventosproxParticipantes.py (all)
         run: |
           set -euo pipefail
-          which google-chrome
-          google-chrome --version || true
-          python -c "import sys,selenium,bs4; print('Python:',sys.version); print('Selenium:',selenium.__version__); print('BS4 OK')"
-
-      # --- Encadenado: descargar por run-id del workflow 02 ---
-      - name: Download 02info artifact (chained)
-        if: ${{ github.event_name == 'workflow_run' }}
-        uses: actions/download-artifact@v4
-        with:
-          name: a02-02info-json
-          path: ./artifacts
-          run-id: ${{ github.event.workflow_run.id }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-
-      # --- Manual: localizar por API el último artifact y bajarlo como ZIP ---
-      - name: Install jq & unzip (manual only)
-        if: ${{ github.event_name == 'workflow_dispatch' }}
-        run: sudo apt-get update && sudo apt-get install -y jq unzip
-
-      - name: Find & fetch latest 'a02-02info-json' (manual)
-        if: ${{ github.event_name == 'workflow_dispatch' }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          repo="${{ github.repository }}"
-          best_id=""
-          best_ts=""
-          for page in 1 2 3 4 5; do
-            resp=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-                   "https://api.github.com/repos/${repo}/actions/artifacts?per_page=100&page=${page}")
-            n=$(echo "$resp" | jq '.artifacts | length')
-            [ "$n" -eq 0 ] && break
-            while read -r id ts; do
-              if [ -z "$best_ts" ] || [ "$(date -d "$ts" +%s)" -gt "$(date -d "$best_ts" +%s)" ]; then
-                best_id="$id"; best_ts="$ts"
-              fi
-            done < <(echo "$resp" | jq -r '.artifacts[] | select(.name=="a02-02info-json" and .expired==false) | "\(.id) \(.updated_at)"')
-          done
-          [ -n "$best_id" ] || { echo "::error::No active artifact named a02-02info-json"; exit 1; }
-          mkdir -p artifacts
-          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -L \
-            "https://api.github.com/repos/${repo}/actions/artifacts/${best_id}/zip" \
-            -o a02.zip
-          unzip -o a02.zip -d ./artifacts
-          ls -la ./artifacts
-
-      # --- Construir ./output/events.json SIN heredocs (usando github-script) ---
-      - name: Build output/events.json from 02 JSON (or CSV fallback)
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const path = require('path');
-
-            const in1 = './artifacts/02competiciones_detalladas.json';
-            const in2 = './artifacts/competiciones_detalladas.json';
-            let inputJson = fs.existsSync(in1) ? in1 : (fs.existsSync(in2) ? in2 : null);
-
-            const outDir = './output';
-            const outPath = path.join(outDir, 'events.json');
-            fs.mkdirSync(outDir, { recursive: true });
-
-            function writeEvents(out) {
-              fs.writeFileSync(outPath, JSON.stringify(out, null, 2), 'utf8');
-              core.info(`Wrote ${outPath} with ${out.length} events`);
-            }
-
-            const uuidRe = /[0-9a-f-]{36}/i;
-
-            if (inputJson) {
-              const data = JSON.parse(fs.readFileSync(inputJson, 'utf8'));
-              const out = [];
-              for (const it of data) {
-                let id = it.id || it.uuid;
-                if (!id) {
-                  const urls = (it.urls || it.enlaces || {});
-                  for (const k of ['info','participants','participantes','runs']) {
-                    const u = urls[k] || '';
-                    const m = u.match(uuidRe);
-                    if (m) { id = m[0]; break; }
-                  }
-                }
-                const nombre = it.nombre || it.title || '';
-                const enlaces = it.enlaces || {};
-                const urls = it.urls || {};
-                const participantes = enlaces.participantes || enlaces.participants || urls.participants || urls.participantes || '';
-                if (id && participantes) {
-                  out.push({ id, nombre, enlaces: { participantes } });
-                }
-              }
-              writeEvents(out);
-            } else {
-              const dir = './artifacts';
-              if (!fs.existsSync(dir)) {
-                core.setFailed('No artifacts dir found.');
-                return;
-              }
-              const list = fs.readdirSync(dir);
-              const csvs = list.filter(f => /^events_past_.*\.csv$/i.test(f)).sort((a,b)=>b.localeCompare(a));
-              if (!csvs.length) {
-                core.setFailed('No input JSON/CSV to build ./output/events.json');
-                return;
-              }
-              const csvPath = path.join(dir, csvs[0]);
-              const content = fs.readFileSync(csvPath, 'utf8').trim();
-              const lines = content.split(/\r?\n/);
-              const header = lines.shift().split(',');
-              const idx = Object.fromEntries(header.map((h,i)=>[h.trim().toLowerCase(), i]));
-              const get = (row, k) => row[idx[k]] ? row[idx[k]].trim() : '';
-              const out = [];
-              for (const line of lines) {
-                const cols = line.split(',');
-                const id = get(cols, 'uuid') || get(cols, 'id');
-                const nombre = get(cols, 'title') || get(cols, 'nombre');
-                const part = get(cols, 'participants_url') || get(cols, 'participantes_url');
-                if (id && part) out.push({ id, nombre, enlaces: { participantes: part } });
-              }
-              writeEvents(out);
-            }
-
-          result-encoding: string
-
-      # --- Crear .env desde Secrets para que lo lea load_dotenv() ---
-      - name: Create .env from secrets (for 03 script)
-        run: |
-          set -euo pipefail
-          rm -f .env
-          {
-            printf "FLOW_EMAIL=%s\n" "${{ secrets.FLOW_EMAIL }}"
-            printf "FLOW_PASS=%s\n"  "${{ secrets.FLOW_PASS }}"
-            printf "HEADLESS=%s\n"   "${HEADLESS}"
-            printf "INCOGNITO=%s\n"  "${INCOGNITO}"
-            printf "OUT_DIR=./output\n"
-            printf "MAX_SCROLLS=10\nSCROLL_WAIT_S=2.0\nSLOW_MIN_S=1.0\nSLOW_MAX_S=3.0\n"
-            printf "SHOW_CONFIG=true\n"
-          } >> .env
-          echo ".env created (values hidden)"
-
-      # --- Ejecutar tu script 03 (sin argumentos; lee ./output/events.json y .env) ---
-      - name: Run 03_eventosproxParticipantes.py
-        run: |
-          set -euo pipefail
+          mkdir -p "$OUT_DIR"
           SCRIPT_PATH="$(find . -maxdepth 6 -type f -name '03_eventosproxParticipantes.py' -print -quit)"
-          [ -n "$SCRIPT_PATH" ] || { echo "::error::03_eventosproxParticipantes.py not found"; exit 1; }
-          echo "Using script: $SCRIPT_PATH"
-          python "$SCRIPT_PATH"
+          [ -n "$SCRIPT_PATH" ] || { echo "::error::No se encuentra 03_eventosproxParticipantes.py"; exit 1; }
+          echo "Using: $SCRIPT_PATH"
+          python "$SCRIPT_PATH" all
 
-      # --- Comprobación de salida (no rompe si está vacío, solo avisa) ---
-      - name: Check generated participants
+      - name: Verify outputs & list
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          files=(./output/participants/*.json)
-          echo "Total participants JSON: ${#files[@]}"
-          ls -lh ./output/participants | head -n 100 || true
-          if [ ${#files[@]} -eq 0 ]; then
-            echo "::warning::No participant files were generated. (extract_participants_data() may still be stub or page structure changed)"
-          fi
+          ls -la ./output || true
+          test -f ./output/participantes.json || echo "::warning::No existe ./output/participantes.json (revisa logs del 03)"
 
-      - name: Upload participants artifact
+      - name: Upload processed participants (JSON+CSV)
         uses: actions/upload-artifact@v4
         with:
-          name: a03-participants-jsons
-          path: ./output/participants/*.json
+          name: a03-participants-processed
+          path: |
+            ./output/participantes.json
+            ./output/participantes_*.json
+            ./output/events_*.csv
+            ./output/participants_*.csv
+            ./output/participantes_procesado_*.csv
+            ./output/progress_*.json
           if-no-files-found: warn
-          retention-days: 7
+          retention-days: 10
