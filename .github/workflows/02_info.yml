@@ -16,7 +16,10 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TZ: Europe/Madrid
-      FLOW_USER_EMAIL: ${{ secrets.FLOW_USER_EMAIL }}
+      # Admite ambos juegos de nombres:
+      FLOW_EMAIL:         ${{ secrets.FLOW_EMAIL }}
+      FLOW_PASS:          ${{ secrets.FLOW_PASS }}
+      FLOW_USER_EMAIL:    ${{ secrets.FLOW_USER_EMAIL }}
       FLOW_USER_PASSWORD: ${{ secrets.FLOW_USER_PASSWORD }}
       HEADLESS: "true"
 
@@ -36,7 +39,7 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.txt
 
-      - name: Install deps (selenium, bs4, etc.)
+      - name: Install deps
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
@@ -46,14 +49,7 @@ jobs:
       - name: Setup Chrome
         uses: browser-actions/setup-chrome@v1
 
-      - name: Check Chrome and libs
-        run: |
-          set -euo pipefail
-          which google-chrome
-          google-chrome --version || true
-          python -c "import sys,selenium,bs4; print('Python:',sys.version); print('Selenium:',selenium.__version__); print('BS4 OK')"
-
-      # -------- Download artifact from workflow 01 --------
+      # --- Caso encadenado: artefacto del run que nos dispara
       - name: Download 01events artifact (chained)
         if: ${{ github.event_name == 'workflow_run' }}
         uses: actions/download-artifact@v4
@@ -63,6 +59,7 @@ jobs:
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
+      # --- Caso manual: buscar el más reciente por API (jq + unzip)
       - name: Install jq and unzip (manual only)
         if: ${{ github.event_name == 'workflow_dispatch' }}
         run: sudo apt-get update && sudo apt-get install -y jq unzip
@@ -96,7 +93,6 @@ jobs:
           unzip -o artifacts.zip -d ./artifacts
           ls -la ./artifacts
 
-      # -------- Prepare input expected by your script --------
       - name: Prepare input for script (rename 01events -> competiciones_agility.json)
         run: |
           set -euo pipefail
@@ -105,14 +101,12 @@ jobs:
           cp -f ./artifacts/01events.json ./output/competiciones_agility.json
           ls -la ./output
 
-      # -------- Run your Python script --------
       - name: Run 02_eventosproxINFO.py
         run: |
           set -euo pipefail
           SCRIPT_PATH="$(find . -maxdepth 5 -type f -name '02_eventosproxINFO.py' -print -quit)"
           [ -n "$SCRIPT_PATH" ] || { echo "::error::02_eventosproxINFO.py not found"; exit 1; }
           echo "Using script: $SCRIPT_PATH"
-          # Pass explicit args to be compatible with both versions of the script
           python "$SCRIPT_PATH" "./output/competiciones_agility.json" "./output/competiciones_detalladas.json"
           ls -lh ./output
 
@@ -120,9 +114,13 @@ jobs:
         run: |
           set -euo pipefail
           test -f ./output/competiciones_detalladas.json || { echo "::error::Output JSON not found"; exit 1; }
-          head -n 40 ./output/competiciones_detalladas.json || true
+          python - <<'PY'
+          import json
+          with open("./output/competiciones_detalladas.json","r",encoding="utf-8") as f:
+              data=json.load(f)
+          print("Competiciones detalladas:", len(data))
+          PY
 
-      # -------- Upload enriched JSON to pass to workflow 03 --------
       - name: Upload 02info artifact
         uses: actions/upload-artifact@v4
         with:
