@@ -1,12 +1,29 @@
 name: 03 Participantes (scrape + process)
 
 on:
+  # Encadenado desde el 02
+  workflow_run:
+    workflows: ["02 - INFO desde 01events"]   # Debe coincidir EXACTAMENTE con el name del 02
+    types: [completed]
+
+  # Lanzamiento manual
+  workflow_dispatch: {}
+
+  # (Opcional) ejecución diaria
   schedule:
     - cron: '3 4 * * *'
-  workflow_dispatch: {}
+
+concurrency:
+  group: participantes-03
+  cancel-in-progress: true
 
 jobs:
   run_and_upload:
+    # Ejecuta si:
+    # - lo lanzas a mano (workflow_dispatch), o
+    # - viene encadenado y el 02 terminó con éxito, o
+    # - lo lanza el cron
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') }}
     runs-on: ubuntu-latest
     env:
       TZ: Europe/Madrid
@@ -39,7 +56,7 @@ jobs:
             pip install selenium webdriver-manager beautifulsoup4 python-dotenv pandas python-dateutil numpy
           fi
 
-      - name: "Ejecutar 03 (all: scrape + process)"
+      - name: Ejecutar 03 (all: scrape + process)
         shell: bash
         run: |
           set -euo pipefail
@@ -57,7 +74,6 @@ jobs:
           ls -1 ./output/*progress_*.json 2>/dev/null || true
           ls -1 ./output/participantes_procesado_*.csv 2>/dev/null || true
 
-      # Garantiza que hay algo que subir (si no, falla el 03)
       - name: Assert outputs exist
         shell: bash
         run: |
