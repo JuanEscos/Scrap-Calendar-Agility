@@ -1,32 +1,40 @@
-name: 04 Union participantes
+name: 04 - Unión participantes
 
 on:
+  workflow_run:
+    workflows: ["03 Participantes (scrape + process)"]
+    types: [completed]
   workflow_dispatch: {}
-  schedule:
-    - cron: "25 5 * * *"   # cuando quieras
+
+concurrency:
+  group: union-participantes
+  cancel-in-progress: true
 
 jobs:
-  union:
+  union_participants:
+    # Ejecuta si viene encadenado con éxito o si lo lanzas manualmente
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') }}
     runs-on: ubuntu-latest
-    permissions:
-      actions: read
-      contents: read
     env:
       OUT_DIR: ./output
-
+      ARTIFACT_NAME: a03-participants-processed
     steps:
       - uses: actions/checkout@v4
 
-      - name: Ensure output dir
-        run: mkdir -p "$OUT_DIR"
+      # 1) Obtener run-id del 03 según el modo
+      - name: Run-id (encadenado)
+        id: runid_chained
+        if: ${{ github.event_name == 'workflow_run' }}
+        run: echo "run_id=${{ github.event.workflow_run.id }}" >> "$GITHUB_OUTPUT"
 
-      # 1) Buscar el último run exitoso del workflow 03
-      - name: Get latest successful run of 03
-        id: getrun
+      - name: Run-id (manual -> último run exitoso del 03)
+        id: runid_manual
+        if: ${{ github.event_name == 'workflow_dispatch' }}
         uses: actions/github-script@v7
         with:
           script: |
-            const wfFile = '03_participantes.yml'; // <-- nombre del fichero del workflow 03
+            // Usa el FICHERO del workflow 03 (no el "name") para evitar ambigüedades
+            const wfFile = '.github/workflows/03_participantes.yml';
             const res = await github.rest.actions.listWorkflowRuns({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -39,34 +47,102 @@ jobs:
               return;
             }
             core.setOutput('run_id', res.data.workflow_runs[0].id);
+            core.setOutput('run_url', res.data.workflow_runs[0].html_url);
 
-      # 2) Descargar artefactos del 03 por NOMBRE (tiene que coincidir con el upload del 03)
-      - name: Download artifacts from 03
+      - name: Echo run elegido
+        run: |
+          echo "RUN_ID encadenado : ${{ steps.runid_chained.outputs.run_id }}"
+          echo "RUN_ID manual     : ${{ steps.runid_manual.outputs.run_id }}"
+          echo "RUN_URL manual    : ${{ steps.runid_manual.outputs.run_url }}"
+
+      # 2) Descargar el artefacto del 03
+      - name: Download artifact (chained)
+        if: ${{ github.event_name == 'workflow_run' }}
         uses: actions/download-artifact@v4
         with:
-          name: a03-participants-processed           # <-- el mismo name que sube el 03
-          run-id: ${{ steps.getrun.outputs.run_id }} # <-- muy importante
-          merge-multiple: true
-          path: ${{ env.OUT_DIR }}
+          name: ${{ env.ARTIFACT_NAME }}
+          run-id: ${{ steps.runid_chained.outputs.run_id }}
+          path: ./from03
 
-      - name: Debug listing
+      - name: Download artifact (manual - last success)
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          run-id: ${{ steps.runid_manual.outputs.run_id }}
+          path: ./from03
+
+      - name: List downloaded files
         run: |
-          echo "Contenido de $OUT_DIR:"
-          ls -la "$OUT_DIR" || true
-          echo "Ficheros:"
-          find "$OUT_DIR" -maxdepth 1 -type f -printf "%f\n" || true
+          echo "Contenido de ./from03:"
+          ls -la ./from03 || true
+          echo "---"
+          find ./from03 -maxdepth 1 -type f -printf "%f\n" | sort || true
 
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Run union
+      # 3) Unión
+      - name: Run union script (if present)
+        id: union
+        continue-on-error: true
         run: |
-          python ./04_eventosproxUnion.py "$OUT_DIR" "$OUT_DIR/participantes_completos_final.json"
+          set -euo pipefail
+          mkdir -p "$OUT_DIR"
+          if [ -f "./04_eventosproxUnion.py" ]; then
+            echo "Usando 04_eventosproxUnion.py"
+            python "./04_eventosproxUnion.py" "./from03" "$OUT_DIR/participants_completos_final.json"
+          else
+            echo "No existe 04_eventosproxUnion.py -> fallback simple (copiar participantes.json)"
+            # Preferencia: snapshot consolidado
+            if [ -f "./from03/participantes.json" ]; then
+              cp -f "./from03/participantes.json" "$OUT_DIR/participants_completos_final.json"
+            else
+              # Si no hay snapshot, intenta el versionado por fecha más reciente
+              latest="$(ls -1 ./from03/participantes_*.json 2>/dev/null | sort | tail -n1 || true)"
+              if [ -n "$latest" ]; then
+                cp -f "$latest" "$OUT_DIR/participants_completos_final.json"
+              else
+                echo "::error::No se encontró participantes.json ni participantes_*.json en el artefacto"; exit 1
+              fi
+            fi
+          fi
 
-      - name: Upload final
+      - name: Verificar resultado final
+        run: |
+          set -euo pipefail
+          ls -lh "$OUT_DIR"
+          test -f "$OUT_DIR/participants_completos_final.json"
+          echo "Tamaño:"
+          wc -c "$OUT_DIR/participants_completos_final.json"
+          sha256sum "$OUT_DIR/participants_completos_final.json" | awk '{print $1}' > local.sha256
+          echo "Hash local: $(cat local.sha256)"
+
+      # --- FTPS opcional (puedes dejarlo desactivado si aún no toca) ---
+      # - name: (FTPS) Subir JSON final
+      #   if: ${{ false }}  # cambia a true cuando quieras activarlo
+      #   env:
+      #     FTP_SERVER:     ${{ secrets.FTP_SERVER }}
+      #     FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
+      #     FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
+      #     FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
+      #   run: |
+      #     set -euo pipefail
+      #     FILE="$OUT_DIR/participants_completos_final.json"
+      #     BASE="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/Competiciones/ListadoParticipantes"
+      #     TS="$(date -u +'%Y%m%dT%H%M%SZ')"
+      #     curl --fail --ssl-reqd --ftp-create-dirs --disable-epsv --ftp-skip-pasv-ip \
+      #          --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
+      #          --upload-file "$FILE" "${BASE}/participants_completos_final.json"
+      #     curl --fail --ssl-reqd --ftp-create-dirs --disable-epsv --ftp-skip-pasv-ip \
+      #          --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
+      #          --upload-file "$FILE" "${BASE}/participants_completos_final_${TS}.json"
+
+      - name: Upload final artifact
         uses: actions/upload-artifact@v4
         with:
           name: a04-participantes-final
-          path: ${{ env.OUT_DIR }}/participantes_completos_final.json
+          path: ${{ env.OUT_DIR }}/participants_completos_final.json
           if-no-files-found: error
+          retention-days: 7
