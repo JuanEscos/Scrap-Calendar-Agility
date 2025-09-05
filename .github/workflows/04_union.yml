@@ -1,14 +1,20 @@
 name: 04 Union participantes
 
 on:
+  # Lanzamiento manual
+  workflow_dispatch: {}
+  # Programado (opcional)
+  schedule:
+    - cron: '6 4 * * *'
+  # Auto-disparo cuando termina el 03
   workflow_run:
-    workflows: ["03 Participantes (scrape + process)"]  # <-- Debe coincidir EXACTAMENTE con el 'name' del 03
+    workflows: ["03 Participantes (scrape + process)"]  # Debe coincidir EXACTAMENTE con el name del 03
     types: [completed]
 
 jobs:
   union:
-    # Solo ejecuta si el run del 03 terminó OK
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    # Si viene de workflow_run, solo ejecuta si el 03 terminó OK
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -23,28 +29,75 @@ jobs:
         shell: bash
         run: mkdir -p "$OUT_DIR"
 
-      - name: Log triggering run
-        shell: bash
-        run: |
-          echo "Triggered by run: ${{ github.event.workflow_run.id }}"
-          echo "From workflow  : ${{ github.event.workflow.name }}"
-          echo "Conclusion      : ${{ github.event.workflow_run.conclusion }}"
-
-      # 🔽 Descarga del run que nos disparó (la pieza clave)
+      # 1) Si nos disparó el 03 (workflow_run), bajamos SUS artefactos por run-id
       - name: Download artifacts from triggering 03 run
+        id: dl_run
+        if: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' }}
         uses: actions/download-artifact@v4
         with:
           run-id: ${{ github.event.workflow_run.id }}
           name: a03-participants-processed
           merge-multiple: true
           path: ${{ env.OUT_DIR }}
+        continue-on-error: true
 
+      # 2) Si se lanzó manual o por cron (o falló lo anterior), baja el último artefacto por NOMBRE a nivel repo
+      - name: Download latest repo artifact by NAME
+        id: dl_name
+        if: ${{ github.event_name != 'workflow_run' || steps.dl_run.outcome == 'failure' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: a03-participants-processed
+          repository: ${{ github.repository }}
+          merge-multiple: true
+          path: ${{ env.OUT_DIR }}
+        continue-on-error: true
+
+      # 3) Fallback: si sigue sin haber nada, usa el último run success del 03 y descarga TODO lo de ese run
+      - name: Get latest successful run of 03 (fallback)
+        id: getrun
+        if: ${{ (github.event_name != 'workflow_run' && steps.dl_name.outcome == 'failure') || (github.event_name == 'workflow_run' && steps.dl_run.outcome == 'failure' && steps.dl_name.outcome == 'failure') }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const wfFile = '03_participantes.yml';
+            const res = await github.rest.actions.listWorkflowRuns({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: wfFile,
+              status: 'success',
+              per_page: 1
+            });
+            if (!res.data.workflow_runs.length) {
+              core.setFailed(`No successful runs for ${wfFile}`);
+              return;
+            }
+            const run = res.data.workflow_runs[0];
+            core.setOutput('run_id', String(run.id));
+            core.setOutput('run_url', run.html_url);
+
+      - name: Echo selected run (fallback)
+        if: ${{ steps.getrun.outputs.run_id }}
+        shell: bash
+        run: |
+          printf 'Using 03 run (fallback): %s\n' "${{ steps.getrun.outputs.run_url }}"
+
+      - name: Download ALL artifacts from selected 03 run (pattern "*")
+        if: ${{ steps.getrun.outputs.run_id }}
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ steps.getrun.outputs.run_id }}
+          pattern: "*"
+          merge-multiple: true
+          path: ${{ env.OUT_DIR }}
+
+      # 4) Verificación
       - name: Fail if nothing downloaded
         shell: bash
         run: |
           set -euo pipefail
           if ! ls -1 "$OUT_DIR"/* 1>/dev/null 2>&1; then
-            echo "::error::No se descargó ningún artefacto del 03 (run ${GITHUB_EVENT_PATH})."
+            echo "::error::No se descargó ningún artefacto del 03. Revisa que el 03 suba 'a03-participants-processed'."
             exit 1
           fi
 
