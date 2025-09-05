@@ -3,7 +3,7 @@ name: 03 Participantes (scrape + process)
 on:
   # Encadenado desde el 02
   workflow_run:
-    workflows: ["02 - INFO desde 01events"]   # Debe coincidir EXACTAMENTE con el name del 02
+    workflows: ["02 - INFO desde 01events"]
     types: [completed]
 
   # Lanzamiento manual
@@ -19,11 +19,8 @@ concurrency:
 
 jobs:
   run_and_upload:
-    # Ejecuta si:
-    # - lo lanzas a mano (workflow_dispatch), o
-    # - viene encadenado y el 02 terminó con éxito, o
-    # - lo lanza el cron
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') }}
+    # Ejecuta si NO viene desde workflow_run (p.ej. manual o cron) O si viene encadenado y el 02 terminó OK
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     env:
       TZ: Europe/Madrid
