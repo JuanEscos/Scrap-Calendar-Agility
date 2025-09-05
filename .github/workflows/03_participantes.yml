@@ -1,7 +1,7 @@
-name: 03 Participantes (scrape + process)
+name: 03 - Participantes (scrape + process)
 
 on:
-  # Encadenado desde el 02
+  # Encadenado automáticamente desde el 02
   workflow_run:
     workflows: ["02 - INFO desde 01events"]
     types: [completed]
@@ -9,7 +9,7 @@ on:
   # Lanzamiento manual
   workflow_dispatch: {}
 
-  # (Opcional) ejecución diaria
+  # (Opcional) cron diario
   schedule:
     - cron: '3 4 * * *'
 
@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   run_and_upload:
-    # Ejecuta si NO viene desde workflow_run (p.ej. manual o cron) O si viene encadenado y el 02 terminó OK
+    # Ejecuta si viene manual/cron o si viene encadenado y el 02 terminó OK
     if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     env:
@@ -39,13 +39,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: pip
+          cache: 'pip'
           cache-dependency-path: requirements.txt
 
       - name: Instalar dependencias
-        shell: bash
         run: |
-          set -euo pipefail
           python -m pip install --upgrade pip setuptools wheel
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt
@@ -54,44 +52,23 @@ jobs:
           fi
 
       - name: Ejecutar 03 (all: scrape + process)
-        shell: bash
-        run: |
-          set -euo pipefail
-          python "./03_eventosproxParticipantes.py" all
+        run: python "./03_eventosproxParticipantes.py" all
 
-      - name: Listado de outputs
-        shell: bash
+      - name: Mostrar outputs
         run: |
           echo "Contenido de $OUT_DIR:"
           ls -la "$OUT_DIR" || true
-          echo "Coincidencias previstas:"
-          ls -1 ./output/*events_*.csv 2>/dev/null || true
-          ls -1 ./output/*participantes_*.csv 2>/dev/null || true
-          ls -1 ./output/participantes*.json 2>/dev/null || true
-          ls -1 ./output/*progress_*.json 2>/dev/null || true
-          ls -1 ./output/participantes_procesado_*.csv 2>/dev/null || true
 
-      - name: Assert outputs exist
-        shell: bash
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          files=( ./output/*events_*.csv ./output/*participantes_*.csv ./output/participantes*.json ./output/participantes_procesado_*.csv )
-          echo "Ficheros a subir: ${files[*]:-<ninguno>}"
-          if [ ${#files[@]} -eq 0 ]; then
-            echo "::error::No hay ficheros de salida para subir (revisa nombres y OUT_DIR)"; exit 1
-          fi
-
-      - name: Upload processed participants (JSON+CSV)
+      - name: Subir artefactos (JSON+CSV)
         uses: actions/upload-artifact@v4
         with:
           name: a03-participants-processed
           path: |
-            ./output/*events_*.csv
-            ./output/*participantes_*.csv
-            ./output/participantes.json
-            ./output/participantes_*.json
-            ./output/participantes_procesado_*.csv
-            ./output/*progress_*.json
+            output/*events_*.csv
+            output/*participantes_*.csv
+            output/participantes.json
+            output/participantes_*.json
+            output/participantes_procesado_*.csv
+            output/*progress_*.json
           if-no-files-found: error
           retention-days: 5
