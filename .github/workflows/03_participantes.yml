@@ -1,15 +1,10 @@
 name: 03 - Participantes (scrape + process)
 
 on:
-  # Encadenado automáticamente desde el 02
   workflow_run:
     workflows: ["02 - INFO desde 01events"]
     types: [completed]
-
-  # Lanzamiento manual
   workflow_dispatch: {}
-
-  # (Opcional) cron diario
   schedule:
     - cron: '3 4 * * *'
 
@@ -19,7 +14,6 @@ concurrency:
 
 jobs:
   run_and_upload:
-    # Ejecuta si viene manual/cron o si viene encadenado y el 02 terminó OK
     if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     env:
@@ -51,7 +45,7 @@ jobs:
             pip install selenium webdriver-manager beautifulsoup4 python-dotenv pandas python-dateutil numpy
           fi
 
-      - name: Ejecutar 03 (all: scrape + process)
+      - name: "Ejecutar 03 (all: scrape + process)"
         run: python "./03_eventosproxParticipantes.py" all
 
       - name: Mostrar outputs
