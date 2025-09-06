@@ -14,13 +14,14 @@ concurrency:
 
 jobs:
   run_and_upload:
+    # si viene encadenado, solo seguir si el 02 terminó OK
     if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     env:
       TZ: Europe/Madrid
       OUT_DIR: ./output
       FLOW_EMAIL: ${{ secrets.FLOW_EMAIL }}
-      FLOW_PASS: ${{ secrets.FLOW_PASS }}
+      FLOW_PASS:  ${{ secrets.FLOW_PASS }}
       HEADLESS: "true"
       INCOGNITO: "true"
       FILE_PREFIX: "03"
@@ -33,7 +34,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: 'pip'
+          cache: pip
           cache-dependency-path: requirements.txt
 
       - name: Instalar dependencias
@@ -45,19 +46,30 @@ jobs:
             pip install selenium webdriver-manager beautifulsoup4 python-dotenv pandas python-dateutil numpy
           fi
 
-      - name: Ejecutar 03 (all: scrape + process)
+      - name: "Ejecutar 03 (all: scrape + process)"
         run: python "./03_eventosproxParticipantes.py" all
 
       - name: Mostrar outputs
         run: |
           echo "Contenido de $OUT_DIR:"
           ls -la "$OUT_DIR" || true
-          echo "Previstos:"
-          ls -1 output/*events_*.csv 2>/dev/null || true
-          ls -1 output/*participantes_*.csv 2>/dev/null || true
-          ls -1 output/participantes*.json 2>/dev/null || true
-          ls -1 output/*progress_*.json 2>/dev/null || true
-          ls -1 output/participantes_procesado_*.csv 2>/dev/null || true
+          echo "Coincidencias previstas:"
+          ls -1 ./output/*events_*.csv 2>/dev/null || true
+          ls -1 ./output/*participantes_*.csv 2>/dev/null || true
+          ls -1 ./output/participantes*.json 2>/dev/null || true
+          ls -1 ./output/*progress_*.json 2>/dev/null || true
+          ls -1 ./output/participantes_procesado_*.csv 2>/dev/null || true
+
+      - name: Comprobar que hay ficheros para subir
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=( ./output/*events_*.csv ./output/*participantes_*.csv ./output/participantes*.json ./output/participantes_procesado_*.csv )
+          echo "Ficheros a subir: ${files[*]:-<ninguno>}"
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::error::No hay ficheros de salida para subir (revisa nombres y OUT_DIR)"
+            exit 1
+          fi
 
       - name: Subir artefactos (JSON+CSV)
         uses: actions/upload-artifact@v4
@@ -72,26 +84,3 @@ jobs:
             output/*progress_*.json
           if-no-files-found: error
           retention-days: 5
-
-      - name: (FTPS) Subir outputs 3 para debug
-        if: always()
-        env:
-          FTP_SERVER:     ${{ secrets.FTP_SERVER }}
-          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
-          FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
-          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
-        run: |
-          set -euo pipefail
-          BASE="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/ListadoEventos/Workflows/03"
-          TS="$(date -u +'%Y%m%dT%H%M%SZ')"
-          shopt -s nullglob
-          for f in output/*; do
-            [ -f "$f" ] || continue
-            bn="$(basename "$f")"
-            curl --fail --ssl-reqd --ftp-create-dirs --disable-epsv --ftp-skip-pasv-ip \
-                 --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
-                 --upload-file "$f" "${BASE}/${bn}"
-            curl --fail --ssl-reqd --disable-epsv --ftp-skip-pasv-ip \
-                 --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
-                 --upload-file "$f" "${BASE}/${TS}_${bn}"
-          done
