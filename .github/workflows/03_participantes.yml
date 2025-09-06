@@ -8,6 +8,10 @@ on:
   schedule:
     - cron: '3 4 * * *'
 
+permissions:
+  contents: read
+  actions: write   # necesario para hacer workflow_dispatch del 04
+
 concurrency:
   group: participantes-03
   cancel-in-progress: true
@@ -33,11 +37,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: 'pip'
+          cache: pip
           cache-dependency-path: requirements.txt
 
       - name: Instalar dependencias
         run: |
+          set -euo pipefail
           python -m pip install --upgrade pip setuptools wheel
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt
@@ -45,24 +50,53 @@ jobs:
             pip install selenium webdriver-manager beautifulsoup4 python-dotenv pandas python-dateutil numpy
           fi
 
-      - name: "Ejecutar 03 (all: scrape + process)"
-        run: python "./03_eventosproxParticipantes.py" all
+      - name: Ejecutar 03 (all: scrape + process)
+        run: |
+          set -euo pipefail
+          python "./03_eventosproxParticipantes.py" all
 
       - name: Mostrar outputs
         run: |
           echo "Contenido de $OUT_DIR:"
           ls -la "$OUT_DIR" || true
+          echo "Coincidencias previstas:"
+          ls -1 ./output/*events_*.csv 2>/dev/null || true
+          ls -1 ./output/*participantes_*.csv 2>/dev/null || true
+          ls -1 ./output/participantes*.json 2>/dev/null || true
+          ls -1 ./output/*progress_*.json 2>/dev/null || true
+          ls -1 ./output/participantes_procesado_*.csv 2>/dev/null || true
+
+      - name: Verificar que hay archivos para subir
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=( ./output/*events_*.csv ./output/*participantes_*.csv ./output/participantes*.json ./output/participantes_procesado_*.csv )
+          echo "Ficheros a subir: ${files[*]:-<ninguno>}"
+          [ ${#files[@]} -gt 0 ] || { echo "::error::No hay ficheros de salida para subir"; exit 1; }
 
       - name: Subir artefactos (JSON+CSV)
         uses: actions/upload-artifact@v4
         with:
           name: a03-participants-processed
           path: |
-            output/*events_*.csv
-            output/*participantes_*.csv
-            output/participantes.json
-            output/participantes_*.json
-            output/participantes_procesado_*.csv
-            output/*progress_*.json
+            ./output/*events_*.csv
+            ./output/*participantes_*.csv
+            ./output/participantes.json
+            ./output/participantes_*.json
+            ./output/participantes_procesado_*.csv
+            ./output/*progress_*.json
           if-no-files-found: error
           retention-days: 5
+
+      # Disparo explícito del 04 solo si NO venimos encadenados (para evitar duplicados)
+      - name: Disparar 04 (workflow_dispatch)
+        if: ${{ success() && github.event_name != 'workflow_run' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          curl -fsSL -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            https://api.github.com/repos/${{ github.repository }}/actions/workflows/04_union.yml/dispatches \
+            -d '{"ref":"'"${{ github.ref_name }}"'"}'
