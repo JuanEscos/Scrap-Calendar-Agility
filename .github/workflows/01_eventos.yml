@@ -5,55 +5,36 @@ on:
     - cron: '1 4 * * *'
   workflow_dispatch: {}
 
-concurrency:
-  group: eventos-01
-  cancel-in-progress: true
-
 jobs:
   produce_01events:
     runs-on: ubuntu-latest
     env:
       TZ: Europe/Madrid
-      # 👇 Necesarios por 01_eventosprox.py
       FLOW_EMAIL: ${{ secrets.FLOW_EMAIL }}
       FLOW_PASS:  ${{ secrets.FLOW_PASS }}
       HEADLESS: "true"
-
+      INCOGNITO: "true"
     steps:
       - uses: actions/checkout@v4
 
-      - name: Comprobar que hay credenciales (sin mostrarlas)
-        run: |
-          set -euo pipefail
-          [ -n "${FLOW_EMAIL:-}" ] || { echo "::error::Falta FLOW_EMAIL"; exit 1; }
-          [ -n "${FLOW_PASS:-}" ]  || { echo "::error::Falta FLOW_PASS";  exit 1; }
-          echo "Credenciales presentes en el entorno ✅"
-
-      - uses: actions/setup-python@v5
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: pip
           cache-dependency-path: requirements.txt
 
-      - name: Instalar dependencias
+      - name: Install deps
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install beautifulsoup4 selenium webdriver-manager python-dotenv
+          pip install beautifulsoup4 selenium webdriver-manager
 
       - name: Setup Chrome
         uses: browser-actions/setup-chrome@v1
 
-      # (Opcional) crear .env si tu script usa python-dotenv
-      - name: Escribir .env (opcional)
-        run: |
-          cat > .env <<'EOF'
-          FLOW_EMAIL=${FLOW_EMAIL}
-          FLOW_PASS=${FLOW_PASS}
-          HEADLESS=${HEADLESS}
-          EOF
-
-      - name: Ejecutar 01_eventosprox.py
+      - name: Run 01_eventosprox.py
+        id: run01
         run: |
           set -euo pipefail
           mkdir -p output
@@ -61,18 +42,27 @@ jobs:
           [ -n "${SCRIPT_PATH:-}" ] || { echo "::error::No se encontró 01_eventosprox.py"; exit 1; }
           echo "Usando script: $SCRIPT_PATH"
           python "$SCRIPT_PATH"
+          echo "Listando output:"
+          ls -la ./output || true
           test -f ./output/events.json || { echo "::error::No se generó ./output/events.json"; exit 1; }
-          mv -f ./output/events.json ./output/01events.json
+          cp -f ./output/events.json ./output/01events.json
 
-      - name: Verificar salida
-        run: |
-          ls -lh ./output
-          (command -v jq >/dev/null 2>&1 && jq 'length' ./output/01events.json) || true
-
-      - name: Subir artefacto 01events
+      - name: Upload main artifact
         uses: actions/upload-artifact@v4
         with:
           name: a01-01events-json
           path: ./output/01events.json
           if-no-files-found: error
+          retention-days: 7
+
+      # Artefactos de depuración si algo va mal (o siempre, si quieres)
+      - name: Upload debug (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: a01-debug
+          path: |
+            ./output/**
+            ./01_error.png
+          if-no-files-found: warn
           retention-days: 7
