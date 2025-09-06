@@ -2,14 +2,19 @@ name: 01 - Eventos Prox (JSON base)
 
 on:
   schedule:
-    - cron: '1 4 * * *'
+    - cron: '1 4 * * *'   # 04:01 UTC
   workflow_dispatch: {}
+
+concurrency:
+  group: eventos-01
+  cancel-in-progress: true
 
 jobs:
   produce_01events:
     runs-on: ubuntu-latest
     env:
       TZ: Europe/Madrid
+
     steps:
       - uses: actions/checkout@v4
 
@@ -17,7 +22,9 @@ jobs:
         run: |
           echo "BRANCH: $GITHUB_REF_NAME"
           git ls-files | sed 's/^/ - /' | head -n 200 || true
-          ls -la || true
+          echo "----"
+          ls -la
+          echo "---- FIN LISTADO ----"
 
       - uses: actions/setup-python@v5
         with:
@@ -35,9 +42,6 @@ jobs:
         uses: browser-actions/setup-chrome@v1
 
       - name: Ejecutar 01_eventosprox.py
-        env:
-          FLOW_EMAIL: ${{ secrets.FLOW_EMAIL }}
-          FLOW_PASS:  ${{ secrets.FLOW_PASS }}
         run: |
           set -euo pipefail
           mkdir -p output
@@ -47,17 +51,13 @@ jobs:
           fi
           echo "Usando script: $SCRIPT_PATH"
           python "$SCRIPT_PATH"
-          test -f ./output/01events.json
+          test -f ./output/events.json || { echo "::error::No se generó ./output/events.json"; exit 1; }
+          mv -f ./output/events.json ./output/01events.json
 
       - name: Verificar salida
         run: |
           ls -lh ./output
-          python - <<'PY'
-          import json,sys
-          with open("./output/01events.json","r",encoding="utf-8") as f:
-              data=json.load(f)
-          print("Eventos:", len(data))
-          PY
+          (command -v jq >/dev/null 2>&1 && jq 'length' ./output/01events.json) || true
 
       - name: Subir artefacto 01events
         uses: actions/upload-artifact@v4
@@ -66,3 +66,26 @@ jobs:
           path: ./output/01events.json
           if-no-files-found: error
           retention-days: 7
+
+      - name: (FTPS) Subir outputs 01 para debug
+        if: always()
+        env:
+          FTP_SERVER:     ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
+          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
+        run: |
+          set -euo pipefail
+          BASE="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/ListadoEventos/Workflows/01"
+          TS="$(date -u +'%Y%m%dT%H%M%SZ')"
+          shopt -s nullglob
+          for f in output/*; do
+            [ -f "$f" ] || continue
+            bn="$(basename "$f")"
+            curl --fail --ssl-reqd --ftp-create-dirs --disable-epsv --ftp-skip-pasv-ip \
+                 --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
+                 --upload-file "$f" "${BASE}/${bn}"
+            curl --fail --ssl-reqd --disable-epsv --ftp-skip-pasv-ip \
+                 --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
+                 --upload-file "$f" "${BASE}/${TS}_${bn}"
+          done
