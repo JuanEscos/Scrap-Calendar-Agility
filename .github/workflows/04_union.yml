@@ -2,7 +2,7 @@ name: 04 - Union participantes
 
 on:
   workflow_run:
-    workflows: ["03 - Participantes (scrape + process)"]  # Debe coincidir EXACTO con el name del 03
+    workflows: ["03 - Participantes (scrape + process)"] # Debe coincidir EXACTO con el name del 03
     types: [completed]
   workflow_dispatch: {}
 
@@ -28,9 +28,8 @@ jobs:
         with:
           python-version: '3.11'
 
-      # --------- DESCARGA DE ARTEFACTOS DEL 03 ---------
-      # Ruta normal (encadenado): descargar del run que nos dispara
-      - name: Descargar artefacto del 03 (modo encadenado)
+      # ---------- Artefactos del 03 (participantes) ----------
+      - name: Descargar artefacto del 03 (encadenado)
         if: ${{ github.event_name == 'workflow_run' }}
         uses: actions/download-artifact@v4
         with:
@@ -39,22 +38,19 @@ jobs:
           path: ./artifacts03
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      # Ruta manual: buscar el ÚLTIMO artefacto activo llamado a03-participants-processed y bajarlo vía API
       - name: Instalar jq y unzip (manual)
         if: ${{ github.event_name == 'workflow_dispatch' }}
         run: sudo apt-get update && sudo apt-get install -y jq unzip
 
-      - name: Descargar ÚLTIMO artefacto a03-participants-processed (manual)
+      - name: Descargar ÚLTIMO artefacto del 03 (manual)
         if: ${{ github.event_name == 'workflow_dispatch' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           repo="${{ github.repository }}"
-          best_id=""
-          best_ts=""
-          page=1
-          while :; do
+          best_id=""; best_ts=""
+          for page in 1 2 3 4 5; do
             resp=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
                    "https://api.github.com/repos/${repo}/actions/artifacts?per_page=100&page=${page}")
             n=$(echo "$resp" | jq '.artifacts | length')
@@ -64,7 +60,6 @@ jobs:
                 best_id="$id"; best_ts="$ts"
               fi
             done < <(echo "$resp" | jq -r '.artifacts[] | select(.name=="a03-participants-processed" and .expired==false) | "\(.id) \(.updated_at)"')
-            page=$((page+1))
           done
           [ -n "$best_id" ] || { echo "::error::No hay artefacto activo llamado a03-participants-processed"; exit 1; }
           echo "Descargando artifact id=$best_id (updated_at=$best_ts)"
@@ -75,13 +70,55 @@ jobs:
           unzip -o artifacts03.zip -d ./artifacts03
           ls -la ./artifacts03
 
+      # ---------- Artefactos del 01 (eventos) ----------
+      - name: Descargar artefacto del 01 (encadenado)
+        if: ${{ github.event_name == 'workflow_run' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: a01-01events-json
+          run-id: ${{ github.event.workflow_run.id }}
+          path: ./artifacts01
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Descargar ÚLTIMO artefacto del 01 (manual)
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          repo="${{ github.repository }}"
+          best_id=""; best_ts=""
+          for page in 1 2 3 4 5; do
+            resp=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+                   "https://api.github.com/repos/${repo}/actions/artifacts?per_page=100&page=${page}")
+            n=$(echo "$resp" | jq '.artifacts | length')
+            [ "$n" -eq 0 ] && break
+            while read -r id ts; do
+              if [ -z "$best_ts" ] || [ "$(date -d "$ts" +%s)" -gt "$(date -d "$best_ts" +%s)" ]; then
+                best_id="$id"; best_ts="$ts"
+              fi
+            done < <(echo "$resp" | jq -r '.artifacts[] | select(.name=="a01-01events-json" and .expired==false) | "\(.id) \(.updated_at)"')
+          done
+          [ -n "$best_id" ] || { echo "::error::No hay artefacto activo llamado a01-01events-json"; exit 1; }
+          echo "Descargando artifact id=$best_id (updated_at=$best_ts)"
+          mkdir -p artifacts01
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -L \
+               "https://api.github.com/repos/${repo}/actions/artifacts/${best_id}/zip" \
+               -o artifacts01.zip
+          unzip -o artifacts01.zip -d ./artifacts01
+          ls -la ./artifacts01
+
       - name: Listado de artefactos descargados
         run: |
           echo "Ficheros en ./artifacts03:"
           find ./artifacts03 -maxdepth 2 -type f -printf "%P\n" || true
+          echo "Ficheros en ./artifacts01:"
+          find ./artifacts01 -maxdepth 2 -type f -printf "%P\n" || true
 
-      # --------- UNIÓN ---------
+      # ---------- Unión ----------
       - name: Ejecutar 04_eventosproxUnion.py
+        env:
+          EVENTS_IN_PATH: ./artifacts01
         run: |
           set -euo pipefail
           mkdir -p output
@@ -95,7 +132,15 @@ jobs:
           sha256sum ./output/participants_completos_final.json | awk '{print $1}' > local.sha256
           echo "Hash local: $(cat local.sha256)"
 
-      # --------- FTPS ---------
+      - name: Subir artefacto final
+        uses: actions/upload-artifact@v4
+        with:
+          name: a04-participantes-final
+          path: ./output/participants_completos_final.json
+          if-no-files-found: error
+          retention-days: 14
+
+      # ---------- FTPS ----------
       - name: (FTPS) Listar carpeta remota antes de subir
         env:
           FTP_SERVER:     ${{ secrets.FTP_SERVER }}
