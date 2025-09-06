@@ -2,7 +2,7 @@ name: 04 - Union participantes
 
 on:
   workflow_run:
-    workflows: ["03 Participantes (scrape + process)"]  # Debe coincidir EXACTO con el name del 03
+    workflows: ["03 - Participantes (scrape + process)"]  # Debe coincidir EXACTO con el name del 03
     types: [completed]
   workflow_dispatch: {}
 
