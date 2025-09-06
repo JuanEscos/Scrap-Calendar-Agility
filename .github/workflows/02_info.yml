@@ -10,16 +10,17 @@ permissions:
   contents: read
   actions: read
 
+concurrency:
+  group: eventos-02
+  cancel-in-progress: true
+
 jobs:
   produce_02info:
     if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') }}
     runs-on: ubuntu-latest
     env:
       TZ: Europe/Madrid
-      # Admite ambos juegos de nombres:
-      FLOW_EMAIL:         ${{ secrets.FLOW_EMAIL }}
-      FLOW_PASS:          ${{ secrets.FLOW_PASS }}
-      FLOW_USER_EMAIL:    ${{ secrets.FLOW_USER_EMAIL }}
+      FLOW_USER_EMAIL: ${{ secrets.FLOW_USER_EMAIL }}
       FLOW_USER_PASSWORD: ${{ secrets.FLOW_USER_PASSWORD }}
       HEADLESS: "true"
 
@@ -39,7 +40,7 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.txt
 
-      - name: Install deps
+      - name: Install deps (selenium, bs4, etc.)
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
@@ -49,7 +50,7 @@ jobs:
       - name: Setup Chrome
         uses: browser-actions/setup-chrome@v1
 
-      # --- Caso encadenado: artefacto del run que nos dispara
+      # Descarga encadenada (del run que dispara)
       - name: Download 01events artifact (chained)
         if: ${{ github.event_name == 'workflow_run' }}
         uses: actions/download-artifact@v4
@@ -59,12 +60,12 @@ jobs:
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      # --- Caso manual: buscar el más reciente por API (jq + unzip)
-      - name: Install jq and unzip (manual only)
+      # Fallback manual
+      - name: Install jq/unzip (manual)
         if: ${{ github.event_name == 'workflow_dispatch' }}
         run: sudo apt-get update && sudo apt-get install -y jq unzip
 
-      - name: Find and fetch latest 'a01-01events-json' (manual)
+      - name: Fetch latest a01-01events-json (manual)
         if: ${{ github.event_name == 'workflow_dispatch' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -85,11 +86,9 @@ jobs:
             done < <(echo "$resp" | jq -r '.artifacts[] | select(.name=="a01-01events-json" and .expired==false) | "\(.id) \(.updated_at)"')
           done
           [ -n "$best_id" ] || { echo "::error::No active artifact named a01-01events-json"; exit 1; }
-          echo "Downloading artifact zip id=$best_id"
           mkdir -p artifacts
-          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -L \
-            "https://api.github.com/repos/${repo}/actions/artifacts/${best_id}/zip" \
-            -o artifacts.zip
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -L \
+            "https://api.github.com/repos/${repo}/actions/artifacts/${best_id}/zip" -o artifacts.zip
           unzip -o artifacts.zip -d ./artifacts
           ls -la ./artifacts
 
@@ -114,12 +113,7 @@ jobs:
         run: |
           set -euo pipefail
           test -f ./output/competiciones_detalladas.json || { echo "::error::Output JSON not found"; exit 1; }
-          python - <<'PY'
-          import json
-          with open("./output/competiciones_detalladas.json","r",encoding="utf-8") as f:
-              data=json.load(f)
-          print("Competiciones detalladas:", len(data))
-          PY
+          head -n 40 ./output/competiciones_detalladas.json || true
 
       - name: Upload 02info artifact
         uses: actions/upload-artifact@v4
@@ -128,3 +122,26 @@ jobs:
           path: ./output/competiciones_detalladas.json
           if-no-files-found: error
           retention-days: 7
+
+      - name: (FTPS) Subir outputs 02 para debug
+        if: always()
+        env:
+          FTP_SERVER:     ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
+          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
+        run: |
+          set -euo pipefail
+          BASE="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/ListadoEventos/Workflows/02"
+          TS="$(date -u +'%Y%m%dT%H%M%SZ')"
+          shopt -s nullglob
+          for f in output/*; do
+            [ -f "$f" ] || continue
+            bn="$(basename "$f")"
+            curl --fail --ssl-reqd --ftp-create-dirs --disable-epsv --ftp-skip-pasv-ip \
+                 --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
+                 --upload-file "$f" "${BASE}/${bn}"
+            curl --fail --ssl-reqd --disable-epsv --ftp-skip-pasv-ip \
+                 --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
+                 --upload-file "$f" "${BASE}/${TS}_${bn}"
+          done
