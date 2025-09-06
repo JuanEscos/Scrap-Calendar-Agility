@@ -10,7 +10,7 @@ on:
 
 permissions:
   contents: read
-  actions: write   # necesario para hacer workflow_dispatch del 04
+  actions: write   # para poder disparar el 04 vía API cuando se ejecute manual/cron
 
 concurrency:
   group: participantes-03
@@ -50,7 +50,7 @@ jobs:
             pip install selenium webdriver-manager beautifulsoup4 python-dotenv pandas python-dateutil numpy
           fi
 
-      - name: Ejecutar 03 (all: scrape + process)
+      - name: "Ejecutar 03 (all: scrape + process)"
         run: |
           set -euo pipefail
           python "./03_eventosproxParticipantes.py" all
@@ -88,7 +88,7 @@ jobs:
           if-no-files-found: error
           retention-days: 5
 
-      # Disparo explícito del 04 solo si NO venimos encadenados (para evitar duplicados)
+      # Dispara el 04 sólo si este 03 NO vino encadenado desde el 02 (evitar duplicados)
       - name: Disparar 04 (workflow_dispatch)
         if: ${{ success() && github.event_name != 'workflow_run' }}
         env:
