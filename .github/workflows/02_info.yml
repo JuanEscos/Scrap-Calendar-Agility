@@ -104,20 +104,20 @@ jobs:
           set -euo pipefail
           SCRIPT_PATH="$(git ls-files | grep -E '(^|/)(02_eventosproxINFO\.py)$' | head -n1 || true)"
           [ -n "$SCRIPT_PATH" ] || { echo "::error::02_eventosproxINFO.py not found"; exit 1; }
-          if ! timeout 11m python "$SCRIPT_PATH" "./output/competiciones_agility.json" "./output/competiciones_detalladas.json"; then
+          if ! timeout 11m python "$SCRIPT_PATH" "./output/competiciones_agility.json" "./output/02competiciones_detalladas.json"; then
             echo "::error::02_eventosproxINFO.py timed out"
             pkill -9 -f chrome || true; pkill -9 -f chromedriver || true
             exit 1
           fi
           ls -lh output
-          test -f ./output/competiciones_detalladas.json
-          sha256sum ./output/competiciones_detalladas.json | awk '{print $1}' > local.sha256
+          test -f ./output/02competiciones_detalladas.json
+          sha256sum ./output/02competiciones_detalladas.json | awk '{print $1}' > local.sha256
 
       - name: Upload artifact a02-02info-json
         uses: actions/upload-artifact@v4
         with:
           name: a02-02info-json
-          path: ./output/competiciones_detalladas.json
+          path: ./output/02competiciones_detalladas.json
           if-no-files-found: error
           retention-days: 7
 
@@ -134,7 +134,7 @@ jobs:
           FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
         run: |
           set -euo pipefail
-          FILE="./output/competiciones_detalladas.json"
+          FILE="./output/02competiciones_detalladas.json"
           TS="$(date -u +'%Y%m%dT%H%M%SZ')"
           DEST_DIR="$(printf "%s/Competiciones/ListadoEventos/Workflows/02" "${FTP_REMOTE_DIR%/}")"
 
