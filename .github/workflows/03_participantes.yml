@@ -4,93 +4,107 @@ on:
   workflow_run:
     workflows: ["02 - INFO desde 01events"]
     types: [completed]
-  workflow_dispatch: {}
-  schedule:
-    - cron: '3 4 * * *'
-
-permissions:
-  contents: read
-  actions: read
+  workflow_dispatch:
+    inputs:
+      limit_events:
+        description: 'Límite de eventos (0 = todos)'
+        required: false
+        default: '0'
+      limit_participants:
+        description: 'Límite de participantes por evento (0 = todos)'
+        required: false
+        default: '0'
+      max_scrolls:
+        description: 'Scrolls máximos en la página de eventos'
+        required: false
+        default: '18'
+      scroll_wait_s:
+        description: 'Espera entre scrolls (segundos)'
+        required: false
+        default: '1.8'
 
 concurrency:
   group: participantes-03
   cancel-in-progress: true
 
+permissions:
+  contents: read
+  actions: read
+
 jobs:
   run_and_upload:
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') }}
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 60
     env:
       TZ: Europe/Madrid
       OUT_DIR: ./output
+      # Credenciales del sitio
       FLOW_EMAIL: ${{ secrets.FLOW_EMAIL }}
       FLOW_PASS:  ${{ secrets.FLOW_PASS }}
+      # Flags Selenium
       HEADLESS: "true"
       INCOGNITO: "true"
-      FILE_PREFIX: "03"
-      LIMIT_EVENTS: "0"
-      LIMIT_PARTICIPANTS: "0"
       SHOW_CONFIG: "true"
+      FILE_PREFIX: "03"
+      # Límites (si se lanza a mano puedes sobreescribirlos con inputs)
+      LIMIT_EVENTS: ${{ inputs.limit_events != '' && inputs.limit_events || '0' }}
+      LIMIT_PARTICIPANTS: ${{ inputs.limit_participants != '' && inputs.limit_participants || '0' }}
+      MAX_SCROLLS: ${{ inputs.max_scrolls != '' && inputs.max_scrolls || '18' }}
+      SCROLL_WAIT_S: ${{ inputs.scroll_wait_s != '' && inputs.scroll_wait_s || '1.8' }}
 
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      # Chrome primero, para que Selenium no se quede esperando
+      - name: Setup Google Chrome
+        uses: browser-actions/setup-chrome@v1
+
+      - name: Comprobar Chrome
+        run: |
+          which google-chrome
+          google-chrome --version || true
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: pip
           cache-dependency-path: requirements.txt
 
-      - name: Install deps
+      - name: Instalar dependencias
         run: |
+          set -euo pipefail
           python -m pip install --upgrade pip setuptools wheel
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt
           else
-            pip install selenium webdriver-manager beautifulsoup4 python-dotenv pandas python-dateutil numpy lxml
+            # Selenium 4 usa Selenium Manager (no hace falta webdriver-manager, pero lo dejamos por si acaso)
+            pip install "selenium==4.*" webdriver-manager beautifulsoup4 python-dotenv pandas python-dateutil numpy lxml
           fi
 
-      - name: Setup Chrome
-        uses: browser-actions/setup-chrome@v1
-
-      - name: Run 03_eventosproxParticipantes.py (máx 35 min)
-        timeout-minutes: 35
+      - name: Ejecutar 03 (scrape + process)
+        # Aumenta el timeout del paso (el job puede durar más si lo necesitas)
+        timeout-minutes: 120
         run: |
           set -euo pipefail
-          SCRIPT="./03_eventosproxParticipantes.py"
-          [ -f "$SCRIPT" ] || { echo "::error::No existe $SCRIPT"; exit 1; }
-          if ! timeout 33m python "$SCRIPT" all; then
-            echo "::error::03_eventosproxParticipantes.py superó el tiempo"
-            pkill -9 -f chrome || true; pkill -9 -f chromedriver || true
-            exit 1
-          fi
+          mkdir -p "$OUT_DIR"
+          echo "=== Entradas efectivas para este run ==="
+          env | egrep '^(FLOW_|HEADLESS|INCOGNITO|FILE_PREFIX|LIMIT_|MAX_SCROLLS|SCROLL_WAIT_S|OUT_DIR|TZ)=' | sort
+          echo "========================================"
+          python "./03_eventosproxParticipantes.py" all
 
-      - name: List outputs
+      - name: Listado de outputs
         run: |
           echo "Contenido de $OUT_DIR:"
           ls -la "$OUT_DIR" || true
-          echo "Coincidencias:"
+          echo "Coincidencias previstas:"
           ls -1 ./output/*events_*.csv 2>/dev/null || true
           ls -1 ./output/*participantes_*.csv 2>/dev/null || true
           ls -1 ./output/participantes*.json 2>/dev/null || true
           ls -1 ./output/*progress_*.json 2>/dev/null || true
           ls -1 ./output/participantes_procesado_*.csv 2>/dev/null || true
 
-      - name: Assert outputs exist
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          files=( ./output/*events_*.csv ./output/*participantes_*.csv ./output/participantes*.json ./output/participantes_procesado_*.csv )
-          echo "Ficheros a subir: ${files[*]:-<ninguno>}"
-          if [ ${#files[@]} -eq 0 ]; then
-            echo "::error::No hay ficheros de salida para subir"; exit 1
-          fi
-          # hash para verificación en FTP (usamos el último procesado por fecha)
-          latest_json="$(ls -1 ./output/participantes_*.json 2>/dev/null | sort | tail -n1 || true)"
-          if [ -n "$latest_json" ]; then sha256sum "$latest_json" | awk '{print $1}' > local.sha256; fi
-
-      - name: Upload artifact a03-participants-processed
+      - name: Subir artefactos (JSON+CSV)
         uses: actions/upload-artifact@v4
         with:
           name: a03-participants-processed
@@ -104,12 +118,12 @@ jobs:
           if-no-files-found: error
           retention-days: 5
 
-      # ===== FTP drop de todo lo relevante de 03 =====
-      - name: Install lftp
+      # ===== (Opcional) Copia de diagnóstico al FTP: Workflows/03 =====
+      - name: Instalar lftp
         run: sudo apt-get update && sudo apt-get install -y lftp
 
-      - name: (FTPS) Upload selected files to /Workflows/03 + verify json (máx 6 min)
-        timeout-minutes: 6
+      - name: Publicar outputs en FTP (Workflows/03)
+        continue-on-error: true
         env:
           FTP_SERVER:     ${{ secrets.FTP_SERVER }}
           FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
@@ -117,32 +131,7 @@ jobs:
           FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
         run: |
           set -euo pipefail
-          DEST_DIR="$(printf "%s/Competiciones/ListadoEventos/Workflows/03" "${FTP_REMOTE_DIR%/}")"
-          TS="$(date -u +'%Y%m%dT%H%M%SZ')"
-          latest_json="$(ls -1 ./output/participantes_*.json 2>/dev/null | sort | tail -n1 || true)"
-
-          lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" -e " \
-            set cmd:fail-exit true; set net:timeout 30; set net:max-retries 1; \
-            set ftp:ssl-force true; set ftp:ssl-protect-data true; set ftp:passive-mode true; set ftp:prefer-epsv false; \
-            set ssl:verify-certificate no; \
-            cd '${FTP_REMOTE_DIR}' || cd '/${FTP_REMOTE_DIR}'; \
-            mkdir -f Competiciones; cd Competiciones; mkdir -f ListadoEventos; cd ListadoEventos; \
-            mkdir -f Workflows; cd Workflows; mkdir -f 03; cd 03; \
-            mput -O . ./output/*events_*.csv; \
-            mput -O . ./output/*participantes_*.csv; \
-            mput -O . ./output/participantes_procesado_*.csv; \
-            mput -O . ./output/participantes.json; \
-            bye"
-
-          if [ -n "$latest_json" ] && [ -f local.sha256 ]; then
-            rm -rf dl && mkdir -p dl
-            lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" -e " \
-              set cmd:fail-exit true; set net:timeout 25; set net:max-retries 1; \
-              set ftp:ssl-force true; set ftp:ssl-protect-data true; set ftp:passive-mode true; set ftp:prefer-epsv false; \
-              set ssl:verify-certificate no; \
-              cd '${DEST_DIR}' || cd '/${DEST_DIR}'; \
-              get -O '${PWD}/dl' 'participantes.json'; \
-              bye"
-            sha256sum dl/participantes.json | awk '{print $1}' > remote.sha256
-            diff -q local.sha256 remote.sha256 || { echo "::warning::El hash remoto no coincide (puede que 'participantes.json' aún no exista)"; true; }
-          fi
+          DEST_DIR="${FTP_REMOTE_DIR%/}/Competiciones/ListadoEventos/Workflows/03"
+          echo "Destino FTPS: ftp://${FTP_SERVER}${DEST_DIR}"
+          # Sube todo lo interesante que exista
+          lftp -u "${FTP_USERNAME}","${FTP_PASSWORD}" "ftp://${FTP_SERVER}" -e "set net:timeout 20; set net:max-retries 3; set net:persist-retry 2; set ftp:passive-mode true; set ftp:ssl-force true; set ftp:ssl-protect-data true; set ssl:verify-certificate no; mkdir -p -f ${DEST_DIR}; cd ${DEST_DIR}; mput -E ./output/*events_*.csv; mput -E ./output/*participantes_*.csv; mput -E ./output/participantes*.json; mput -E ./output/*progress_*.json; mput -E ./output/participantes_procesado_*.csv; bye"
