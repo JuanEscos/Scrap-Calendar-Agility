@@ -25,13 +25,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Mostrar árbol del repo (debug)
+      - name: Debug repo
         run: |
           echo "BRANCH: $GITHUB_REF_NAME"
           git ls-files | sed 's/^/ - /' | head -n 200
-          echo "----"
           ls -la
-          echo "---- FIN LISTADO ----"
 
       - uses: actions/setup-python@v5
         with:
@@ -50,19 +48,7 @@ jobs:
       - name: Instalar Google Chrome
         uses: browser-actions/setup-chrome@v1
 
-      - name: Comprobar Chrome y librerías
-        run: |
-          which google-chrome || true
-          google-chrome --version || true
-          python - <<'PY'
-          import sys, selenium, bs4
-          print("Python:", sys.version)
-          print("Selenium:", selenium.__version__)
-          print("BS4 OK")
-          PY
-
       - name: Ejecutar 01_eventosprox.py
-        id: run01
         shell: bash
         run: |
           set -euo pipefail
@@ -81,22 +67,14 @@ jobs:
             echo "::error::No se generó ./output/events.json ni ./output/01events.json"; exit 1
           fi
 
-      - name: Verificar salida
+      - name: Verificar salida local
         run: |
           ls -lh ./output
           test -f ./output/01events.json
-          python - <<'PY'
-          import json
-          with open("./output/01events.json","r",encoding="utf-8") as f:
-              data=json.load(f)
-          print("Tipo raíz:", type(data).__name__)
-          try:
-              print("Nº elementos:", len(data))
-          except Exception:
-              pass
-          PY
+          sha256sum ./output/01events.json | awk '{print $1}' > local.sha256
+          echo "Hash local: $(cat local.sha256)"
 
-      - name: Subir artefacto 01events (para el 02)
+      - name: Subir artefacto (para 02)
         uses: actions/upload-artifact@v4
         with:
           name: a01-01events-json
@@ -104,13 +82,13 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      # ---------- FTPS ----------
+      # ================== FTPS (lftp) ==================
       - name: Instalar lftp
         run: |
           sudo apt-get update
           sudo apt-get install -y lftp
 
-      - name: (FTPS) Diagnóstico de ruta remota (sin heredoc)
+      - name: (FTPS) Diagnóstico de base remota
         env:
           FTP_SERVER:     ${{ secrets.FTP_SERVER }}
           FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
@@ -119,24 +97,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" -e "
-            set cmd:fail-exit true;
-            set net:max-retries 1;
-            set net:timeout 30;
-            set ftp:ssl-force true;
-            set ftp:ssl-protect-data true;
-            set ftp:passive-mode true;
-            set ftp:prefer-epsv false;
-            set ssl:verify-certificate no;
-            echo 'PWD inicial:'; pwd;
-            echo 'Contenido inicial:'; cls -l;
-            cd \"${FTP_REMOTE_DIR}\" || cd \"/${FTP_REMOTE_DIR}\" || echo 'WARN: no puedo cd a FTP_REMOTE_DIR';
-            echo 'PWD tras cd FTP_REMOTE_DIR:'; pwd;
-            echo 'Contenido:'; cls -l;
-            bye
-          "
+          echo "Diagnóstico de ${FTP_SERVER} :: ${FTP_REMOTE_DIR}"
+          lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" -e " \
+            set cmd:fail-exit true; \
+            set net:max-retries 1; \
+            set net:timeout 30; \
+            set ftp:ssl-force true; \
+            set ftp:ssl-protect-data true; \
+            set ftp:passive-mode true; \
+            set ftp:prefer-epsv false; \
+            set ssl:verify-certificate no; \
+            pwd; cls -l; \
+            cd '${FTP_REMOTE_DIR}' || cd '/${FTP_REMOTE_DIR}'; \
+            echo 'PWD tras cd:'; pwd; cls -l; \
+            bye"
 
-      - name: (FTPS) Subir 01events (destino preferente + fallback, sin heredoc)
+      - name: (FTPS) Subir y verificar (01events.json)
         env:
           FTP_SERVER:     ${{ secrets.FTP_SERVER }}
           FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
@@ -149,47 +125,64 @@ jobs:
           [ -f "$FILE" ] || { echo "::error::Falta $FILE"; exit 1; }
           TS="$(date -u +'%Y%m%dT%H%M%SZ')"
 
-          echo ">>> Intento principal: Competiciones/ListadoEventos/Workflows/01"
-          lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" -e "
-            set cmd:fail-exit true;
-            set net:max-retries 2;
-            set net:timeout 40;
-            set ftp:ssl-force true;
-            set ftp:ssl-protect-data true;
-            set ftp:passive-mode true;
-            set ftp:prefer-epsv false;
-            set ssl:verify-certificate no;
+          # 1) Subir a la ruta objetivo
+          echo "Subiendo a ${FTP_REMOTE_DIR}/Competiciones/ListadoEventos/Workflows/01"
+          lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" -e " \
+            set cmd:fail-exit true; \
+            set net:max-retries 2; \
+            set net:timeout 40; \
+            set ftp:ssl-force true; \
+            set ftp:ssl-protect-data true; \
+            set ftp:passive-mode true; \
+            set ftp:prefer-epsv false; \
+            set ssl:verify-certificate no; \
+            cd '${FTP_REMOTE_DIR}' || cd '/${FTP_REMOTE_DIR}'; \
+            mkdir -f Competiciones; cd Competiciones; \
+            mkdir -f ListadoEventos; cd ListadoEventos; \
+            mkdir -f Workflows; cd Workflows; \
+            mkdir -f 01; cd 01; \
+            put -O . '${FILE}' -o '01events_last.json'; \
+            put -O . '${FILE}' -o '01events_${TS}.json'; \
+            echo 'Listado tras subida:'; cls -l; \
+            bye"
 
-            cd \"${FTP_REMOTE_DIR}\" || cd \"/${FTP_REMOTE_DIR}\";
-            mkdir -f Competiciones; cd Competiciones;
-            mkdir -f ListadoEventos; cd ListadoEventos;
-            mkdir -f Workflows; cd Workflows;
-            mkdir -f 01; cd 01;
+          # 2) Descargar y comparar hashes (verificación dura)
+          rm -f remote_last.json remote.sha256 || true
+          lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" -e " \
+            set cmd:fail-exit true; \
+            set net:max-retries 1; \
+            set net:timeout 40; \
+            set ftp:ssl-force true; \
+            set ftp:ssl-protect-data true; \
+            set ftp:passive-mode true; \
+            set ftp:prefer-epsv false; \
+            set ssl:verify-certificate no; \
+            cd '${FTP_REMOTE_DIR}' || cd '/${FTP_REMOTE_DIR}'; \
+            cd Competiciones/ListadoEventos/Workflows/01; \
+            get -O . '01events_last.json' -o 'remote_last.json'; \
+            bye"
+          sha256sum remote_last.json | awk '{print $1}' > remote.sha256
+          echo "Hash remoto: $(cat remote.sha256)"
+          diff -q local.sha256 remote.sha256
 
-            echo 'Destino final:'; pwd; cls -l;
-            put -O . \"${FILE}\" -o \"01events_last.json\";
-            put -O . \"${FILE}\" -o \"01events_${TS}.json\";
-            bye
-          " || echo "WARN: subida principal falló; probaré fallback"
-
-          # Verificación de existencia en la ruta objetivo
-          if lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" -e "set ftp:ssl-force true; set ftp:ssl-protect-data true; set ftp:passive-mode true; set ftp:prefer-epsv false; set ssl:verify-certificate no; cd \"${FTP_REMOTE_DIR}\" || cd \"/${FTP_REMOTE_DIR}\"; cd Competiciones/ListadoEventos/Workflows/01 || exit 3; cls -1; bye" >/dev/null 2>&1; then
-            echo "Subida principal OK en Competiciones/ListadoEventos/Workflows/01"
-          else
-            echo ">>> Fallback: subir en carpeta base ${FTP_REMOTE_DIR}"
-            lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" -e "
-              set cmd:fail-exit true;
-              set net:max-retries 2;
-              set net:timeout 40;
-              set ftp:ssl-force true;
-              set ftp:ssl-protect-data true;
-              set ftp:passive-mode true;
-              set ftp:prefer-epsv false;
-              set ssl:verify-certificate no;
-              cd \"${FTP_REMOTE_DIR}\" || cd \"/${FTP_REMOTE_DIR}\";
-              put -O . \"${FILE}\" -o \"01events_last.json\";
-              put -O . \"${FILE}\" -o \"01events_${TS}.json\";
-              bye
-            "
-            echo "Fallback: archivos subidos en ${FTP_REMOTE_DIR}"
-          fi
+      - name: (FTPS) Buscar archivos 01events* en todo el árbol del FTP_REMOTE_DIR
+        if: always()
+        env:
+          FTP_SERVER:     ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
+          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Búsqueda recursiva de 01events*.json bajo ${FTP_REMOTE_DIR}"
+          lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" -e " \
+            set cmd:fail-exit false; \
+            set ftp:ssl-force true; \
+            set ftp:ssl-protect-data true; \
+            set ftp:passive-mode true; \
+            set ftp:prefer-epsv false; \
+            set ssl:verify-certificate no; \
+            cd '${FTP_REMOTE_DIR}' || cd '/${FTP_REMOTE_DIR}'; \
+            cls -1 -R | grep -Ei '(^|/)(01events_.*\.json|01events_last\.json)$' || true; \
+            bye"
