@@ -1,3 +1,24 @@
+Skip to content
+Navigation Menu
+JuanEscos
+Scrap-Calendar-Agility
+
+Type / to search
+Code
+Issues
+Pull requests
+Actions
+Projects
+Wiki
+Security
+Insights
+Settings
+01 - Eventos Prox (JSON base)
+01 - Eventos Prox (JSON base) #29
+Jobs
+Run details
+Workflow file for this run
+.github/workflows/01_eventos.yml at dbf8581
 name: 01 - Eventos Prox (JSON base)
 
 on:
@@ -22,56 +43,55 @@ jobs:
       FLOW_PASS:  ${{ secrets.FLOW_PASS }}
       HEADLESS: "true"
       INCOGNITO: "true"
-
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: Debug repo
+        run: |
+          echo "BRANCH: $GITHUB_REF_NAME"
+          git ls-files | sed 's/^/ - /' | head -n 200
+          ls -la
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: pip
           cache-dependency-path: requirements.txt
 
-      - name: Install deps
+      - name: Instalar dependencias
         run: |
           python -m pip install --upgrade pip setuptools wheel
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt
           fi
           pip install beautifulsoup4 lxml selenium webdriver-manager python-dotenv
-
-      - name: Install Google Chrome
+      - name: Instalar Google Chrome
         uses: browser-actions/setup-chrome@v1
 
-      - name: Run 01_eventosprox.py
+      - name: Ejecutar 01_eventosprox.py
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p output
           SCRIPT_PATH="$(git ls-files | grep -E '(^|/)(01_eventosprox\.py)$' | head -n1 || true)"
           if [ -z "${SCRIPT_PATH:-}" ]; then
-            echo "::error::No se encontró 01_eventosprox.py"; exit 1
+            echo "::error::No se encontró 01_eventosprox.py en el repo"; exit 1
           fi
+          echo "Usando script: $SCRIPT_PATH"
           python "$SCRIPT_PATH"
           if [ -f ./output/events.json ]; then
             cp -f ./output/events.json ./output/01events.json
           elif [ -f ./output/01events.json ]; then
             :
           else
-            echo "::error::No se generó ./output/01events.json"; exit 1
+            echo "::error::No se generó ./output/events.json ni ./output/01events.json"; exit 1
           fi
-
-      - name: Verify local output
-        shell: bash
+      - name: Verificar salida local
         run: |
-          set -euo pipefail
           ls -lh ./output
           test -f ./output/01events.json
           sha256sum ./output/01events.json | awk '{print $1}' > local.sha256
           echo "Hash local: $(cat local.sha256)"
-
-      - name: Upload artifact (for 02)
+      - name: Subir artefacto (para 02)
         uses: actions/upload-artifact@v4
         with:
           name: a01-01events-json
@@ -79,13 +99,12 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      # ===== FTPS (lftp) con verificación dura =====
-      - name: Install lftp
+      # ================== FTPS (lftp) ==================
+      - name: Instalar lftp
         run: |
           sudo apt-get update
           sudo apt-get install -y lftp
-
-      - name: (FTPS) Print remote PWD and list base
+      - name: (FTPS) Diagnóstico de base remota
         env:
           FTP_SERVER:     ${{ secrets.FTP_SERVER }}
           FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
@@ -94,7 +113,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "REMOTE BASE (secret): ${FTP_REMOTE_DIR}"
+          echo "Diagnóstico de ${FTP_SERVER} :: ${FTP_REMOTE_DIR}"
           lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" -e " \
             set cmd:fail-exit true; \
             set net:max-retries 1; \
@@ -104,12 +123,11 @@ jobs:
             set ftp:passive-mode true; \
             set ftp:prefer-epsv false; \
             set ssl:verify-certificate no; \
-            echo 'PWD inicial:'; pwd; cls -l; \
+            pwd; cls -l; \
             cd '${FTP_REMOTE_DIR}' || cd '/${FTP_REMOTE_DIR}'; \
-            echo 'PWD tras cd a FTP_REMOTE_DIR:'; pwd; cls -l; \
+            echo 'PWD tras cd:'; pwd; cls -l; \
             bye"
-
-      - name: (FTPS) Upload + verify 01events.json
+      - name: (FTPS) Subir y verificar (01events.json)
         env:
           FTP_SERVER:     ${{ secrets.FTP_SERVER }}
           FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
@@ -120,13 +138,9 @@ jobs:
           set -euo pipefail
           FILE="./output/01events.json"
           [ -f "$FILE" ] || { echo "::error::Falta $FILE"; exit 1; }
-
-          DEST_DIR="$(printf "%s/Competiciones/ListadoEventos/Workflows/01" "${FTP_REMOTE_DIR%/}")"
-          echo "DEST_DIR calculado: $DEST_DIR"
-
           TS="$(date -u +'%Y%m%dT%H%M%SZ')"
-
-          # 1) Subir (fijo + histórico) y listar
+          # 1) Subir a la ruta objetivo
+          echo "Subiendo a ${FTP_REMOTE_DIR}/Competiciones/ListadoEventos/Workflows/01"
           lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" -e " \
             set cmd:fail-exit true; \
             set net:max-retries 2; \
@@ -143,11 +157,10 @@ jobs:
             mkdir -f 01; cd 01; \
             put -O . '${FILE}' -o '01events_last.json'; \
             put -O . '${FILE}' -o '01events_${TS}.json'; \
-            echo 'Contenido en destino:'; pwd; cls -l; \
+            echo 'Listado tras subida:'; cls -l; \
             bye"
-
-          # 2) Descargar de forma explícita a una carpeta local y comparar hash
-          rm -rf dl && mkdir -p dl
+          # 2) Descargar y comparar hashes (verificación dura)
+          rm -f remote_last.json remote.sha256 || true
           lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" -e " \
             set cmd:fail-exit true; \
             set net:max-retries 1; \
@@ -157,17 +170,14 @@ jobs:
             set ftp:passive-mode true; \
             set ftp:prefer-epsv false; \
             set ssl:verify-certificate no; \
-            cd '${DEST_DIR}' || cd '/${DEST_DIR}'; \
-            get -O '${PWD}/dl' '01events_last.json'; \
+            cd '${FTP_REMOTE_DIR}' || cd '/${FTP_REMOTE_DIR}'; \
+            cd Competiciones/ListadoEventos/Workflows/01; \
+            get -O . '01events_last.json' -o 'remote_last.json'; \
             bye"
-
-          test -f dl/01events_last.json || { echo 'No se descargó dl/01events_last.json'; ls -la dl; exit 1; }
-
-          sha256sum dl/01events_last.json | awk '{print $1}' > remote.sha256
+          sha256sum remote_last.json | awk '{print $1}' > remote.sha256
           echo "Hash remoto: $(cat remote.sha256)"
           diff -q local.sha256 remote.sha256
-
-      - name: (FTPS) Recursive search for 01events*.json (debug)
+      - name: (FTPS) Buscar archivos 01events* en todo el árbol del FTP_REMOTE_DIR
         if: always()
         env:
           FTP_SERVER:     ${{ secrets.FTP_SERVER }}
@@ -177,7 +187,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "Buscando 01events*.json bajo ${FTP_REMOTE_DIR}"
+          echo "Búsqueda recursiva de 01events*.json bajo ${FTP_REMOTE_DIR}"
           lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" -e " \
             set cmd:fail-exit false; \
             set ftp:ssl-force true; \
@@ -188,3 +198,4 @@ jobs:
             cd '${FTP_REMOTE_DIR}' || cd '/${FTP_REMOTE_DIR}'; \
             cls -1 -R | grep -Ei '(^|/)(01events_.*\.json|01events_last\.json)$' || true; \
             bye"
+Update 01_eventos.yml · JuanEscos/Scrap-Calendar-Agility@dbf8581
