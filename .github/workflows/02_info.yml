@@ -11,7 +11,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: eventos-02
+  group: info-02
   cancel-in-progress: true
 
 jobs:
@@ -20,48 +20,42 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TZ: Europe/Madrid
-      FLOW_USER_EMAIL: ${{ secrets.FLOW_EMAIL }}
-      FLOW_USER_PASSWORD: ${{ secrets.FLOW_PASS }}
+      FLOW_EMAIL: ${{ secrets.FLOW_EMAIL }}
+      FLOW_PASS:  ${{ secrets.FLOW_PASS }}
       HEADLESS: "true"
+      INCOGNITO: "true"
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Debug repo tree
-        run: |
-          echo "BRANCH: $GITHUB_REF_NAME"
-          ls -la
-          echo "--- files ---"
-          git ls-files | head -n 200 || true
-
-      - uses: actions/setup-python@v5
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: pip
           cache-dependency-path: requirements.txt
 
-      - name: Install deps (selenium, bs4, etc.)
+      - name: Install deps
         run: |
-          set -euo pipefail
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           pip install "selenium==4.*" "webdriver-manager==4.*" beautifulsoup4 lxml
 
-      - name: Setup Chrome
+      - name: Setup Chrome (for Selenium)
         uses: browser-actions/setup-chrome@v1
 
-      # Descarga encadenada (del run que dispara)
-      - name: Download 01events artifact (chained)
+      # -------- Descarga del artefacto 01 --------
+      - name: Download 01events (chained)
         if: ${{ github.event_name == 'workflow_run' }}
         uses: actions/download-artifact@v4
         with:
           name: a01-01events-json
-          path: ./artifacts
           run-id: ${{ github.event.workflow_run.id }}
+          path: ./artifacts
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      # Fallback manual
-      - name: Install jq/unzip (manual)
+      # Fallback para lanzamiento manual: busca el último artefacto activo
+      - name: Install jq+unzip (manual only)
         if: ${{ github.event_name == 'workflow_dispatch' }}
         run: sudo apt-get update && sudo apt-get install -y jq unzip
 
@@ -72,9 +66,9 @@ jobs:
         run: |
           set -euo pipefail
           repo="${{ github.repository }}"
-          best_id=""
-          best_ts=""
-          for page in 1 2 3 4 5; do
+          best_id=""; best_ts=""
+          page=1
+          while :; do
             resp=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
                    "https://api.github.com/repos/${repo}/actions/artifacts?per_page=100&page=${page}")
             n=$(echo "$resp" | jq '.artifacts | length')
@@ -84,64 +78,57 @@ jobs:
                 best_id="$id"; best_ts="$ts"
               fi
             done < <(echo "$resp" | jq -r '.artifacts[] | select(.name=="a01-01events-json" and .expired==false) | "\(.id) \(.updated_at)"')
+            page=$((page+1))
           done
-          [ -n "$best_id" ] || { echo "::error::No active artifact named a01-01events-json"; exit 1; }
+          [ -n "$best_id" ] || { echo "::error::No hay artefacto activo llamado a01-01events-json"; exit 1; }
+          echo "Descargando artifact id=$best_id (updated_at=$best_ts)"
           mkdir -p artifacts
-          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -L \
-            "https://api.github.com/repos/${repo}/actions/artifacts/${best_id}/zip" -o artifacts.zip
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -L \
+               "https://api.github.com/repos/${repo}/actions/artifacts/${best_id}/zip" \
+               -o artifacts.zip
           unzip -o artifacts.zip -d ./artifacts
           ls -la ./artifacts
 
-      - name: Prepare input for script (rename 01events -> competiciones_agility.json)
+      # -------- Preparar input + ejecutar --------
+      - name: Prepare input
         run: |
           set -euo pipefail
           mkdir -p output
-          test -f ./artifacts/01events.json || { echo "::error::Missing ./artifacts/01events.json"; exit 1; }
-          cp -f ./artifacts/01events.json ./output/competiciones_agility.json
+          test -f ./artifacts/01events.json || { echo "::error::Falta ./artifacts/01events.json"; exit 1; }
+          cp -f ./artifacts/01events.json ./output/01events.json
           ls -la ./output
 
       - name: Run 02_eventosproxINFO.py
         run: |
           set -euo pipefail
           SCRIPT_PATH="$(find . -maxdepth 5 -type f -name '02_eventosproxINFO.py' -print -quit)"
-          [ -n "$SCRIPT_PATH" ] || { echo "::error::02_eventosproxINFO.py not found"; exit 1; }
-          echo "Using script: $SCRIPT_PATH"
-          python "$SCRIPT_PATH" "./output/competiciones_agility.json" "./output/competiciones_detalladas.json"
-          ls -lh ./output
+          [ -n "$SCRIPT_PATH" ] || { echo "::error::No se encontró 02_eventosproxINFO.py"; exit 1; }
+          echo "Usando script: $SCRIPT_PATH"
+          python "$SCRIPT_PATH" "./output/01events.json" "./output/02competiciones_detalladas.json"
 
       - name: Verify output
         run: |
           set -euo pipefail
-          test -f ./output/competiciones_detalladas.json || { echo "::error::Output JSON not found"; exit 1; }
-          head -n 40 ./output/competiciones_detalladas.json || true
+          ls -lh ./output
+          test -f ./output/02competiciones_detalladas.json || { echo "::error::No se generó 02competiciones_detalladas.json"; exit 1; }
+          head -n 40 ./output/02competiciones_detalladas.json || true
 
+      # -------- Artefactos --------
       - name: Upload 02info artifact
         uses: actions/upload-artifact@v4
         with:
           name: a02-02info-json
-          path: ./output/competiciones_detalladas.json
+          path: ./output/02competiciones_detalladas.json
           if-no-files-found: error
           retention-days: 7
 
-      - name: (FTPS) Subir outputs 02 para debug
+      - name: Upload debug (always)
         if: always()
-        env:
-          FTP_SERVER:     ${{ secrets.FTP_SERVER }}
-          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
-          FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
-          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
-        run: |
-          set -euo pipefail
-          BASE="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/ListadoEventos/Workflows/02"
-          TS="$(date -u +'%Y%m%dT%H%M%SZ')"
-          shopt -s nullglob
-          for f in output/*; do
-            [ -f "$f" ] || continue
-            bn="$(basename "$f")"
-            curl --fail --ssl-reqd --ftp-create-dirs --disable-epsv --ftp-skip-pasv-ip \
-                 --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
-                 --upload-file "$f" "${BASE}/${bn}"
-            curl --fail --ssl-reqd --disable-epsv --ftp-skip-pasv-ip \
-                 --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
-                 --upload-file "$f" "${BASE}/${TS}_${bn}"
-          done
+        uses: actions/upload-artifact@v4
+        with:
+          name: a02-debug
+          path: |
+            ./output/**
+            ./02_error.png
+          if-no-files-found: warn
+          retention-days: 7
