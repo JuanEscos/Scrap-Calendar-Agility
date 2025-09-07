@@ -21,8 +21,7 @@ jobs:
     env:
       TZ: Europe/Madrid
       HEADLESS: "true"
-      # El script usa FLOW_USER_EMAIL / FLOW_USER_PASSWORD (o hace fallback),
-      # así que mapeamos desde tus secretos:
+      # Mapeamos tus secretos a las env que usa tu script:
       FLOW_USER_EMAIL: ${{ secrets.FLOW_EMAIL }}
       FLOW_USER_PASSWORD: ${{ secrets.FLOW_PASS }}
 
@@ -45,8 +44,8 @@ jobs:
       - name: Setup Chrome (para Selenium)
         uses: browser-actions/setup-chrome@v1
 
-      # ============= Descarga del artefacto del 01 =============
-      # Caso A: encadenado automáticamente desde el 01
+      # ===== Descarga artefacto del 01 =====
+      # Encadenado (workflow_run): baja del run que disparó este job
       - name: Descargar artefacto 01 (encadenado)
         if: ${{ github.event_name == 'workflow_run' }}
         uses: actions/download-artifact@v4
@@ -56,14 +55,14 @@ jobs:
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      # Caso B: lanzamiento manual -> localizar el último run OK del 01 y tomar su run_id
+      # Manual (workflow_dispatch): busca el último run OK del 01 por NOMBRE DE ARCHIVO
       - name: Localizar último run OK del 01 (manual)
         if: ${{ github.event_name == 'workflow_dispatch' }}
         id: pickrun
         uses: actions/github-script@v7
         with:
           script: |
-            // Usa el NOMBRE DE ARCHIVO del workflow 01 en el repo:
+            // Cambia si tu workflow 01 usa otro nombre de archivo:
             const wfFile = '01_eventos.yml';
             const res = await github.rest.actions.listWorkflowRuns({
               owner: context.repo.owner,
@@ -117,7 +116,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      # ============= Publicación por FTPS =============
+      # ===== Publicación por FTPS con lftp (sin here-doc) =====
       - name: Instalar lftp
         run: sudo apt-get update && sudo apt-get install -y lftp
 
@@ -126,7 +125,7 @@ jobs:
           FTP_SERVER:     ${{ secrets.FTP_SERVER }}
           FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
           FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
-          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}   # p.ej. /www/NewWeb/Privado
+          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
         run: |
           set -euo pipefail
           SRC="./output/02competiciones_detalladas.json"
@@ -137,21 +136,12 @@ jobs:
           echo "Destino FTPS: ftp://${FTP_SERVER}${DEST_DIR}"
           sha256sum "$SRC" | awk '{print $1}' > local.sha256
 
-          # Subir (TLS explícito, modo pasivo)
-          lftp -u "${FTP_USERNAME}","${FTP_PASSWORD}" "ftp://${FTP_SERVER}" <<EOF
-set net:timeout 20
-set net:max-retries 3
-set net:persist-retry 2
-set ftp:passive-mode true
-set ftp:ssl-force true
-set ftp:ssl-protect-data true
-set ssl:verify-certificate no
-mkdir -p -f ${DEST_DIR}
-cd ${DEST_DIR}
-put -O . ${SRC} -o 02info_last.json
-put -O . ${SRC} -o 02info_${TS}.json
-bye
-EOF
+          # Comandos lftp en línea (sin here-doc)
+          LFTP_CMD="set net:timeout 20; set net:max-retries 3; set net:persist-retry 2; \
+set ftp:passive-mode true; set ftp:ssl-force true; set ftp:ssl-protect-data true; set ssl:verify-certificate no; \
+mkdir -p -f ${DEST_DIR}; cd ${DEST_DIR}; put ${SRC} -o 02info_last.json; put ${SRC} -o 02info_${TS}.json; bye"
+
+          lftp -u "${FTP_USERNAME}","${FTP_PASSWORD}" -e "${LFTP_CMD}" "ftp://${FTP_SERVER}"
 
           # Verificar descargando la copia fija
           curl --fail --ssl-reqd --disable-epsv --ftp-skip-pasv-ip \
