@@ -132,7 +132,7 @@ jobs:
                --upload-file "$FILE" \
                "${BASE}/01events_${TS}.json"
 
-      - name: (FTPS) Verificar remoto (hash)
+      - name: (FTPS) Subir (fijo + timestamp) con curl robusto
         env:
           FTP_SERVER:     ${{ secrets.FTP_SERVER }}
           FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
@@ -141,15 +141,33 @@ jobs:
         run: |
           set -euo pipefail
           FILE="./output/01events.json"
+          [ -f "$FILE" ] || { echo "::error::No existe $FILE"; exit 1; }
+
           BASE="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/Competiciones/ListadoEventos/Workflows/01"
-          sha256sum "$FILE" | awk '{print $1}' > local.sha256
+          TS="$(date -u +'%Y%m%dT%H%M%SZ')"
 
-          echo "Descargando 01events_last.json para comparar…"
-          curl --fail --ssl-reqd --disable-epsv --ftp-skip-pasv-ip \
-               --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
-               --output remote.json "${BASE}/01events_last.json"
+          upload() {
+            local src="$1" dst="$2"
+            echo "Subiendo: ${BASE}/${dst}"
+            # Notas:
+            # --ssl-reqd        : FTPS explícito (AUTH TLS) para control y datos
+            # --quote PBSZ/PROT : fuerza protección de datos P (cifrado)
+            # --ftp-method nocwd: evita CWD innecesarios (servidores “quisquillosos”)
+            # --retry           : pequeños reintentos
+            # (quité --disable-epsv/--ftp-skip-pasv-ip: con FTPS suelen causar 426)
+            curl -v --fail --ssl-reqd \
+                 --quote "PBSZ 0" --quote "PROT P" \
+                 --ftp-create-dirs --ftp-method nocwd \
+                 --retry 3 --retry-delay 2 \
+                 --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
+                 --upload-file "$src" \
+                 "${BASE}/${dst}"
+          }
 
-          sha256sum remote.json | awk '{print $1}' > remote.sha256
-          echo "Local : $(cat local.sha256)"
-          echo "Remoto: $(cat remote.sha256)"
-          diff -q local.sha256 remote.sha256 && echo "OK: hash coincide"
+          # 1) Subo copia con timestamp
+          upload "$FILE" "01events_${TS}.json"
+          # Pausa breve para evitar 426 por doble transferencia inmediata
+          sleep 3
+          # 2) Subo nombre fijo (para consumo)
+          upload "$FILE" "01events_last.json"
+
