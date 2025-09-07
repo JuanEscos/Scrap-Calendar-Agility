@@ -22,6 +22,7 @@ jobs:
       FLOW_PASS:  ${{ secrets.FLOW_PASS }}
       HEADLESS: "true"
       INCOGNITO: "true"
+
     steps:
       - uses: actions/checkout@v4
 
@@ -62,6 +63,7 @@ jobs:
           fi
 
       - name: Verify local output
+        shell: bash
         run: |
           set -euo pipefail
           ls -lh ./output
@@ -119,7 +121,6 @@ jobs:
           FILE="./output/01events.json"
           [ -f "$FILE" ] || { echo "::error::Falta $FILE"; exit 1; }
 
-          # ruta destino final
           DEST_DIR="$(printf "%s/Competiciones/ListadoEventos/Workflows/01" "${FTP_REMOTE_DIR%/}")"
           echo "DEST_DIR calculado: $DEST_DIR"
 
@@ -145,8 +146,8 @@ jobs:
             echo 'Contenido en destino:'; pwd; cls -l; \
             bye"
 
-          # 2) Descargar para verificar hash (falla si no existe)
-          rm -f remote_last.json remote.sha256 || true
+          # 2) Descargar de forma explícita a una carpeta local y comparar hash
+          rm -rf dl && mkdir -p dl
           lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" -e " \
             set cmd:fail-exit true; \
             set net:max-retries 1; \
@@ -156,10 +157,13 @@ jobs:
             set ftp:passive-mode true; \
             set ftp:prefer-epsv false; \
             set ssl:verify-certificate no; \
-            cd '${DEST_DIR}' || { echo 'No puedo cd a DEST_DIR'; bye; }; \
-            get -O . '01events_last.json' -o 'remote_last.json'; \
+            cd '${DEST_DIR}' || cd '/${DEST_DIR}'; \
+            get -O '${PWD}/dl' '01events_last.json'; \
             bye"
-          sha256sum remote_last.json | awk '{print $1}' > remote.sha256
+
+          test -f dl/01events_last.json || { echo 'No se descargó dl/01events_last.json'; ls -la dl; exit 1; }
+
+          sha256sum dl/01events_last.json | awk '{print $1}' > remote.sha256
           echo "Hash remoto: $(cat remote.sha256)"
           diff -q local.sha256 remote.sha256
 
