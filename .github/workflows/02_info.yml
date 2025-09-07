@@ -21,7 +21,7 @@ jobs:
     env:
       TZ: Europe/Madrid
       HEADLESS: "true"
-      # Mapeamos tus secretos a las env que usa tu script:
+      # Tu script usa estas env:
       FLOW_USER_EMAIL: ${{ secrets.FLOW_EMAIL }}
       FLOW_USER_PASSWORD: ${{ secrets.FLOW_PASS }}
 
@@ -41,11 +41,11 @@ jobs:
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           pip install "selenium==4.*" "webdriver-manager==4.*" beautifulsoup4 lxml
 
-      - name: Setup Chrome (para Selenium)
+      - name: Setup Chrome (Selenium)
         uses: browser-actions/setup-chrome@v1
 
-      # ===== Descarga artefacto del 01 =====
-      # Encadenado (workflow_run): baja del run que disparó este job
+      # ========= Descarga artefacto del 01 =========
+      # Encadenado: del run que dispara este workflow
       - name: Descargar artefacto 01 (encadenado)
         if: ${{ github.event_name == 'workflow_run' }}
         uses: actions/download-artifact@v4
@@ -55,28 +55,37 @@ jobs:
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      # Manual (workflow_dispatch): busca el último run OK del 01 por NOMBRE DE ARCHIVO
+      # Manual: localizar por NOMBRE del workflow 01 y traer el último run OK
       - name: Localizar último run OK del 01 (manual)
         if: ${{ github.event_name == 'workflow_dispatch' }}
         id: pickrun
         uses: actions/github-script@v7
         with:
           script: |
-            // Cambia si tu workflow 01 usa otro nombre de archivo:
-            const wfFile = '01_eventos.yml';
-            const res = await github.rest.actions.listWorkflowRuns({
+            // Debe coincidir con el "name:" del workflow 01
+            const WORKFLOW_NAME = "01 - Eventos Prox (JSON base)";
+            const { data: wfList } = await github.rest.actions.listRepoWorkflows({
+              owner: context.repo.owner,
+              repo: context.repo.repo
+            });
+            const wf = wfList.workflows.find(w => w.name === WORKFLOW_NAME);
+            if (!wf) {
+              core.setFailed(`No se encontró el workflow llamado "${WORKFLOW_NAME}". Comprueba el name: del 01.`);
+              return;
+            }
+            const { data: runs } = await github.rest.actions.listWorkflowRuns({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              workflow_id: wfFile,
+              workflow_id: wf.id,
               status: 'success',
               per_page: 1
             });
-            if (!res.data.workflow_runs.length) {
-              core.setFailed(`No successful runs for ${wfFile}`);
+            if (!runs.workflow_runs.length) {
+              core.setFailed(`No hay runs success recientes de "${WORKFLOW_NAME}".`);
               return;
             }
-            core.setOutput('run_id', res.data.workflow_runs[0].id);
-            core.setOutput('run_url', res.data.workflow_runs[0].html_url);
+            core.setOutput('run_id', runs.workflow_runs[0].id);
+            core.setOutput('run_url', runs.workflow_runs[0].html_url);
 
       - name: Descargar artefacto 01 (manual)
         if: ${{ github.event_name == 'workflow_dispatch' }}
@@ -87,21 +96,19 @@ jobs:
           run-id: ${{ steps.pickrun.outputs.run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Preparar entrada/salida para el script
+      - name: Preparar entrada/salida
         run: |
           set -euo pipefail
           mkdir -p output
-          if [ -f ./artifacts01/01events_last.json ]; then
-            cp -f ./artifacts01/01events_last.json ./output/01events_last.json
-          elif [ -f ./artifacts01/01events.json ]; then
-            cp -f ./artifacts01/01events.json ./output/01events_last.json
+          if   [ -f ./artifacts01/01events_last.json ]; then cp -f ./artifacts01/01events_last.json ./output/01events_last.json
+          elif [ -f ./artifacts01/01events.json     ]; then cp -f ./artifacts01/01events.json     ./output/01events_last.json
           else
             echo "::error::No se encontró 01events_last.json ni 01events.json en artifacts01"; exit 1
           fi
           echo "IN : ./output/01events_last.json"
           echo "OUT: ./output/02competiciones_detalladas.json"
 
-      - name: Ejecutar 02_eventosproxINFO.py (con args IN/OUT)
+      - name: Ejecutar 02_eventosproxINFO.py
         run: |
           set -euo pipefail
           python "./02_eventosproxINFO.py" "./output/01events_last.json" "./output/02competiciones_detalladas.json"
@@ -116,7 +123,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      # ===== Publicación por FTPS con lftp (sin here-doc) =====
+      # ========= Publicación por FTPS con lftp (sin here-doc) =========
       - name: Instalar lftp
         run: sudo apt-get update && sudo apt-get install -y lftp
 
@@ -136,14 +143,9 @@ jobs:
           echo "Destino FTPS: ftp://${FTP_SERVER}${DEST_DIR}"
           sha256sum "$SRC" | awk '{print $1}' > local.sha256
 
-          # Comandos lftp en línea (sin here-doc)
-          LFTP_CMD="set net:timeout 20; set net:max-retries 3; set net:persist-retry 2; \
-set ftp:passive-mode true; set ftp:ssl-force true; set ftp:ssl-protect-data true; set ssl:verify-certificate no; \
-mkdir -p -f ${DEST_DIR}; cd ${DEST_DIR}; put ${SRC} -o 02info_last.json; put ${SRC} -o 02info_${TS}.json; bye"
+          lftp -u "${FTP_USERNAME}","${FTP_PASSWORD}" "ftp://${FTP_SERVER}" -e "set net:timeout 20; set net:max-retries 3; set net:persist-retry 2; set ftp:passive-mode true; set ftp:ssl-force true; set ftp:ssl-protect-data true; set ssl:verify-certificate no; mkdir -p -f ${DEST_DIR}; cd ${DEST_DIR}; put ${SRC} -o 02info_last.json; put ${SRC} -o 02info_${TS}.json; bye"
 
-          lftp -u "${FTP_USERNAME}","${FTP_PASSWORD}" -e "${LFTP_CMD}" "ftp://${FTP_SERVER}"
-
-          # Verificar descargando la copia fija
+          # Verificación
           curl --fail --ssl-reqd --disable-epsv --ftp-skip-pasv-ip \
                --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
                --output remote.json "ftp://${FTP_SERVER}${DEST_DIR}/02info_last.json"
