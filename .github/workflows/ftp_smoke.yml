@@ -1,0 +1,65 @@
+name: FTP Smoke Test
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install lftp
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lftp
+
+      - name: Probe FTPS path, upload, list, download, compare
+        env:
+          FTP_SERVER:     ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
+          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TS="$(date -u +'%Y%m%dT%H%M%SZ')"
+          echo "hello from GA ${TS}" > hello_${TS}.txt
+          sha256sum hello_${TS}.txt | awk '{print $1}' > local.sha256
+
+          DEST_DIR="$(printf "%s/Competiciones/ListadoEventos/Workflows/_diagnostic" "${FTP_REMOTE_DIR%/}")"
+          echo "DEST_DIR: $DEST_DIR"
+
+          lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" -e " \
+            set cmd:fail-exit true; \
+            set net:max-retries 2; \
+            set net:timeout 40; \
+            set ftp:ssl-force true; \
+            set ftp:ssl-protect-data true; \
+            set ftp:passive-mode true; \
+            set ftp:prefer-epsv false; \
+            set ssl:verify-certificate no; \
+            echo 'PWD inicial:'; pwd; \
+            cd '${FTP_REMOTE_DIR}' || cd '/${FTP_REMOTE_DIR}'; \
+            echo 'PWD tras cd:'; pwd; \
+            mkdir -f Competiciones; cd Competiciones; \
+            mkdir -f ListadoEventos; cd ListadoEventos; \
+            mkdir -f Workflows; cd Workflows; \
+            mkdir -f _diagnostic; cd _diagnostic; \
+            put -O . 'hello_${TS}.txt' -o 'hello_${TS}.txt'; \
+            echo 'Listado en destino:'; pwd; cls -l; \
+            bye"
+
+          rm -f remote.txt remote.sha256 || true
+          lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" -e " \
+            set cmd:fail-exit true; \
+            set ftp:ssl-force true; \
+            set ftp:ssl-protect-data true; \
+            set ftp:passive-mode true; \
+            set ftp:prefer-epsv false; \
+            set ssl:verify-certificate no; \
+            cd '${DEST_DIR}' || cd '/${DEST_DIR}'; \
+            get -O . 'hello_${TS}.txt' -o 'remote.txt'; \
+            bye"
+          sha256sum remote.txt | awk '{print $1}' > remote.sha256
+          echo "Local:  $(cat local.sha256)"
+          echo "Remote: $(cat remote.sha256)"
+          diff -q local.sha256 remote.sha256
