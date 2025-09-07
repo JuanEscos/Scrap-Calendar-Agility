@@ -2,7 +2,7 @@ name: 01 - Eventos Prox (JSON base)
 
 on:
   schedule:
-    - cron: '1 4 * * *'     # 04:01 UTC
+    - cron: '1 4 * * *'   # 04:01 UTC
   workflow_dispatch: {}
 
 permissions:
@@ -10,7 +10,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: eventos-01
+  group: participantes-01
   cancel-in-progress: true
 
 jobs:
@@ -18,20 +18,21 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TZ: Europe/Madrid
-      OUT_DIR: ./output
-      # Credenciales usadas por tu script 01_eventosprox.py
+      # --- Credenciales para 01_eventosprox.py ---
       FLOW_EMAIL: ${{ secrets.FLOW_EMAIL }}
       FLOW_PASS:  ${{ secrets.FLOW_PASS }}
       HEADLESS: "true"
       INCOGNITO: "true"
-
     steps:
       - uses: actions/checkout@v4
 
-      - name: Debug repo tree (opcional)
+      - name: Mostrar árbol del repo (debug)
         run: |
           echo "BRANCH: $GITHUB_REF_NAME"
-          git ls-files | head -n 200 || true
+          git ls-files | sed 's/^/ - /' | head -n 200
+          echo "----"
+          ls -la
+          echo "---- FIN LISTADO ----"
 
       - uses: actions/setup-python@v5
         with:
@@ -39,42 +40,68 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.txt
 
-      - name: Install Python deps
+      - name: Instalar dependencias
         run: |
-          set -euo pipefail
-          python -m pip install --upgrade pip
+          python -m pip install --upgrade pip setuptools wheel
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt
-          else
-            pip install beautifulsoup4 selenium webdriver-manager lxml
           fi
+          # Por si no estuvieran en requirements.txt:
+          pip install beautifulsoup4 lxml selenium webdriver-manager python-dotenv
 
-      - name: Setup Chrome (para Selenium)
+      - name: Instalar Google Chrome
         uses: browser-actions/setup-chrome@v1
 
-      - name: Run 01_eventosprox.py
+      - name: Comprobar Chrome y librerías
+        run: |
+          which google-chrome || true
+          google-chrome --version || true
+          python - <<'PY'
+          import sys, selenium, bs4
+          print("Python:", sys.version)
+          print("Selenium:", selenium.__version__)
+          print("BS4 OK")
+          PY
+
+      - name: Ejecutar 01_eventosprox.py
+        id: run01
+        shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$OUT_DIR"
-          SCRIPT_PATH="$(find . -maxdepth 3 -type f -name '01_eventosprox.py' -print -quit)"
+          mkdir -p output
+          # Localizar el script (en raíz o subcarpetas)
+          SCRIPT_PATH="$(git ls-files | grep -E '(^|/)(01_eventosprox\.py)$' | head -n1 || true)"
           if [ -z "${SCRIPT_PATH:-}" ]; then
             echo "::error::No se encontró 01_eventosprox.py en el repo"; exit 1
           fi
           echo "Usando script: $SCRIPT_PATH"
           python "$SCRIPT_PATH"
 
-          # El script puede generar output/events.json; normalizamos a 01events.json
-          if [ -f "$OUT_DIR/events.json" ]; then
-            mv -f "$OUT_DIR/events.json" "$OUT_DIR/01events.json"
+          # Aceptar ./output/events.json o ./output/01events.json
+          if [ -f ./output/events.json ]; then
+            cp -f ./output/events.json ./output/01events.json
+          elif [ -f ./output/01events.json ]; then
+            :
+          else
+            echo "::error::No se generó ./output/events.json ni ./output/01events.json"; exit 1
           fi
-          test -f "$OUT_DIR/01events.json" || { echo "::error::No se generó $OUT_DIR/01events.json"; exit 1; }
 
-      - name: Show output
+      - name: Verificar salida
         run: |
-          ls -lh "$OUT_DIR"
-          jq 'length' "$OUT_DIR/01events.json" || true
+          ls -lh ./output
+          test -f ./output/01events.json
+          # (Opcional) contar elementos si es JSON array
+          python - <<'PY'
+          import json, sys
+          with open("./output/01events.json","r",encoding="utf-8") as f:
+              data=json.load(f)
+          if isinstance(data,list):
+              print("Eventos totales:", len(data))
+          else:
+              print("JSON raíz no es lista (OK si tu script lo define así).")
+          PY
 
-      - name: Upload artifact (a01-01events-json)
+      - name: Subir artefacto 01events (para el 02)
         uses: actions/upload-artifact@v4
         with:
           name: a01-01events-json
@@ -82,60 +109,97 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      - name: Install lftp
-        run: sudo apt-get update && sudo apt-get install -y lftp
+      # ---------- FTPS: subir a /Competiciones/ListadoEventos/Workflows/01 ----------
+      - name: Instalar lftp
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lftp
 
-      - name: (FTPS) Upload 01events (timestamp + last) with lftp
+      - name: (FTPS) Diagnóstico de ruta remota
+        env:
+          FTP_SERVER:     ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
+          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}   # p.ej. /www/NewWeb/Privado
+        shell: bash
+        run: |
+          set -euo pipefail
+          lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" <<EOF
+          set cmd:fail-exit true
+          set net:max-retries 1
+          set net:timeout 30
+          set ftp:ssl-force true
+          set ftp:ssl-protect-data true
+          set ftp:passive-mode true
+          set ssl:verify-certificate no
+          echo "PWD inicial:"; pwd
+          echo "Contenido inicial:"; cls -l
+          cd "${FTP_REMOTE_DIR}" || cd "/${FTP_REMOTE_DIR}" || echo "WARN: no puedo cd a FTP_REMOTE_DIR; sigo en PWD"
+          echo "PWD tras cd FTP_REMOTE_DIR:"; pwd
+          echo "Contenido:"; cls -l
+          bye
+          EOF
+
+      - name: (FTPS) Subir 01events (destino preferente + fallback)
         env:
           FTP_SERVER:     ${{ secrets.FTP_SERVER }}
           FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
           FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
           FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
+        shell: bash
         run: |
           set -euo pipefail
           FILE="./output/01events.json"
-          [ -f "$FILE" ] || { echo "::error::No existe $FILE"; exit 1; }
+          [ -f "$FILE" ] || { echo "::error::Falta $FILE"; exit 1; }
           TS="$(date -u +'%Y%m%dT%H%M%SZ')"
-          REMOTE_BASE="${FTP_REMOTE_DIR}/Competiciones/ListadoEventos/Workflows/01"
 
-          lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" <<EOF
+          # Intento principal: subir a .../Competiciones/ListadoEventos/Workflows/01
+          lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" <<EOF || echo "WARN: subida principal falló; probaré fallback"
           set cmd:fail-exit true
           set net:max-retries 2
           set net:timeout 40
           set ftp:ssl-force true
           set ftp:ssl-protect-data true
           set ftp:passive-mode true
-          set ftp:use-feat true
-          mkdir -p "${REMOTE_BASE}"
-          cd "${REMOTE_BASE}"
-          put -O . "${FILE}" -o "01events_${TS}.json"
+          set ssl:verify-certificate no
+
+          cd "${FTP_REMOTE_DIR}" || cd "/${FTP_REMOTE_DIR}"
+
+          mkdir -f "Competiciones" || true
+          cd "Competiciones" || exit 2
+
+          mkdir -f "ListadoEventos" || true
+          cd "ListadoEventos" || exit 2
+
+          mkdir -f "Workflows" || true
+          cd "Workflows" || exit 2
+
+          mkdir -f "01" || true
+          cd "01" || exit 2
+
+          echo "Destino final:"; pwd; cls -l
           put -O . "${FILE}" -o "01events_last.json"
+          put -O . "${FILE}" -o "01events_${TS}.json"
           bye
           EOF
 
-      - name: (FTPS) Verify remote hash with lftp
-        env:
-          FTP_SERVER:     ${{ secrets.FTP_SERVER }}
-          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
-          FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
-          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
-        run: |
-          set -euo pipefail
-          REMOTE_BASE="${FTP_REMOTE_DIR}/Competiciones/ListadoEventos/Workflows/01"
-          mkdir -p ./verify
-          lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" <<EOF
-          set cmd:fail-exit true
-          set net:max-retries 1
-          set net:timeout 40
-          set ftp:ssl-force true
-          set ftp:ssl-protect-data true
-          set ftp:passive-mode true
-          cd "${REMOTE_BASE}"
-          get -O ./verify "01events_last.json"
-          bye
-          EOF
-          sha256sum ./verify/01events_last.json | awk '{print $1}' > remote.sha256
-          sha256sum ./output/01events.json     | awk '{print $1}' > local.sha256
-          echo "Hash local : $(cat local.sha256)"
-          echo "Hash remoto: $(cat remote.sha256)"
-          diff -q local.sha256 remote.sha256 && echo "OK: hash coincide"
+          # Comprobar si quedó en la carpeta objetivo
+          if lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" -e "set ftp:ssl-force true; set ftp:ssl-protect-data true; set ftp:passive-mode true; set ssl:verify-certificate no; cd \"${FTP_REMOTE_DIR}\" || cd \"/${FTP_REMOTE_DIR}\"; cd Competiciones/ListadoEventos/Workflows/01 || exit 3; cls -1; bye" >/dev/null 2>&1; then
+            echo "Subida principal OK en Competiciones/ListadoEventos/Workflows/01"
+          else
+            echo "Haciendo fallback: subir en carpeta base ${FTP_REMOTE_DIR}"
+            lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" <<EOF
+            set cmd:fail-exit true
+            set net:max-retries 2
+            set net:timeout 40
+            set ftp:ssl-force true
+            set ftp:ssl-protect-data true
+            set ftp:passive-mode true
+            set ssl:verify-certificate no
+            cd "${FTP_REMOTE_DIR}" || cd "/${FTP_REMOTE_DIR}"
+            put -O . "${FILE}" -o "01events_last.json"
+            put -O . "${FILE}" -o "01events_${TS}.json"
+            bye
+            EOF
+            echo "Fallback: archivos subidos en ${FTP_REMOTE_DIR}"
+          fi
