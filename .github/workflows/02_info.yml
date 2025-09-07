@@ -20,9 +20,11 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TZ: Europe/Madrid
+      HEADLESS: "true"
+      # El script usa FLOW_USER_EMAIL / FLOW_USER_PASSWORD (o hace fallback),
+      # así que mapeamos desde tus secretos:
       FLOW_USER_EMAIL: ${{ secrets.FLOW_EMAIL }}
       FLOW_USER_PASSWORD: ${{ secrets.FLOW_PASS }}
-      HEADLESS: "true"
 
     steps:
       - uses: actions/checkout@v4
@@ -43,8 +45,9 @@ jobs:
       - name: Setup Chrome (para Selenium)
         uses: browser-actions/setup-chrome@v1
 
-      # --- Artefacto del 01 ---
-      - name: Descargar 01events (modo encadenado)
+      # ============= Descarga del artefacto del 01 =============
+      # Caso A: encadenado automáticamente desde el 01
+      - name: Descargar artefacto 01 (encadenado)
         if: ${{ github.event_name == 'workflow_run' }}
         uses: actions/download-artifact@v4
         with:
@@ -53,37 +56,42 @@ jobs:
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Descargar 01events (modo manual: último disponible)
+      # Caso B: lanzamiento manual -> localizar el último run OK del 01 y tomar su run_id
+      - name: Localizar último run OK del 01 (manual)
         if: ${{ github.event_name == 'workflow_dispatch' }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          repo="${{ github.repository }}"
-          best=""
-          page=1
-          while :; do
-            resp=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
-                           -H "Accept: application/vnd.github+json" \
-                           "https://api.github.com/repos/${repo}/actions/artifacts?per_page=100&page=${page}")
-            n=$(echo "$resp" | jq '.artifacts | length')
-            [ "$n" -eq 0 ] && break
-            cand=$(echo "$resp" | jq -r '.artifacts[] | select(.name=="a01-01events-json" and .expired==false) | .id' | head -n1)
-            if [ -n "$cand" ]; then best="$cand"; break; fi
-            page=$((page+1))
-          done
-          [ -n "$best" ] || { echo "::error::No hay artefacto a01-01events-json"; exit 1; }
-          mkdir -p artifacts01
-          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -L \
-               "https://api.github.com/repos/${repo}/actions/artifacts/${best}/zip" -o a01.zip
-          unzip -o a01.zip -d artifacts01
-          ls -la artifacts01
+        id: pickrun
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // Usa el NOMBRE DE ARCHIVO del workflow 01 en el repo:
+            const wfFile = '01_eventos.yml';
+            const res = await github.rest.actions.listWorkflowRuns({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: wfFile,
+              status: 'success',
+              per_page: 1
+            });
+            if (!res.data.workflow_runs.length) {
+              core.setFailed(`No successful runs for ${wfFile}`);
+              return;
+            }
+            core.setOutput('run_id', res.data.workflow_runs[0].id);
+            core.setOutput('run_url', res.data.workflow_runs[0].html_url);
+
+      - name: Descargar artefacto 01 (manual)
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: a01-01events-json
+          path: ./artifacts01
+          run-id: ${{ steps.pickrun.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Preparar entrada/salida para el script
         run: |
           set -euo pipefail
           mkdir -p output
-          # El artefacto del 01 debe contener 01events_last.json o 01events.json
           if [ -f ./artifacts01/01events_last.json ]; then
             cp -f ./artifacts01/01events_last.json ./output/01events_last.json
           elif [ -f ./artifacts01/01events.json ]; then
@@ -91,7 +99,7 @@ jobs:
           else
             echo "::error::No se encontró 01events_last.json ni 01events.json en artifacts01"; exit 1
           fi
-          echo "IN:  ./output/01events_last.json"
+          echo "IN : ./output/01events_last.json"
           echo "OUT: ./output/02competiciones_detalladas.json"
 
       - name: Ejecutar 02_eventosproxINFO.py (con args IN/OUT)
@@ -109,7 +117,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      # ------- Publicación por FTPS -------
+      # ============= Publicación por FTPS =============
       - name: Instalar lftp
         run: sudo apt-get update && sudo apt-get install -y lftp
 
@@ -126,10 +134,10 @@ jobs:
           TS="$(date -u +'%Y%m%dT%H%M%SZ')"
           DEST_DIR="${FTP_REMOTE_DIR%/}/Competiciones/ListadoEventos/Workflows/02"
 
-          echo "Destino: ftp://${FTP_SERVER}${DEST_DIR}"
+          echo "Destino FTPS: ftp://${FTP_SERVER}${DEST_DIR}"
           sha256sum "$SRC" | awk '{print $1}' > local.sha256
 
-          # Subida con lftp (TLS explícito / puerto 21)
+          # Subir (TLS explícito, modo pasivo)
           lftp -u "${FTP_USERNAME}","${FTP_PASSWORD}" "ftp://${FTP_SERVER}" <<EOF
 set net:timeout 20
 set net:max-retries 3
