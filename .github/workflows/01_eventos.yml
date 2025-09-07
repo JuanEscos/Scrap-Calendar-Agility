@@ -2,89 +2,79 @@ name: 01 - Eventos Prox (JSON base)
 
 on:
   schedule:
-    - cron: '1 4 * * *'   # 04:01 UTC
+    - cron: '1 4 * * *'     # 04:01 UTC
   workflow_dispatch: {}
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: eventos-01
+  cancel-in-progress: true
 
 jobs:
   produce_01events:
     runs-on: ubuntu-latest
     env:
       TZ: Europe/Madrid
-      # El script 01_eventosprox.py exige estas dos variables:
+      OUT_DIR: ./output
+      # Credenciales usadas por tu script 01_eventosprox.py
       FLOW_EMAIL: ${{ secrets.FLOW_EMAIL }}
       FLOW_PASS:  ${{ secrets.FLOW_PASS }}
       HEADLESS: "true"
       INCOGNITO: "true"
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Mostrar árbol del repo y rama (debug)
+      - name: Debug repo tree (opcional)
         run: |
           echo "BRANCH: $GITHUB_REF_NAME"
-          git ls-files | sed 's/^/ - /' | head -n 200
-          echo "----"
-          ls -la
-          echo "---- FIN LISTADO ----"
+          git ls-files | head -n 200 || true
 
-      - name: Setup Python 3.11
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: pip
           cache-dependency-path: requirements.txt
 
-      - name: Instalar dependencias
+      - name: Install Python deps
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt
+          else
+            pip install beautifulsoup4 selenium webdriver-manager lxml
           fi
-          # Por si no estuvieran en requirements.txt:
-          pip install beautifulsoup4 selenium webdriver-manager
 
-      - name: Instalar Google Chrome
+      - name: Setup Chrome (para Selenium)
         uses: browser-actions/setup-chrome@v1
 
-      - name: Comprobar Chrome
+      - name: Run 01_eventosprox.py
         run: |
           set -euo pipefail
-          which google-chrome
-          google-chrome --version || true
-
-      - name: Ejecutar 01_eventosprox.py
-        id: run01
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p output
+          mkdir -p "$OUT_DIR"
           SCRIPT_PATH="$(find . -maxdepth 3 -type f -name '01_eventosprox.py' -print -quit)"
           if [ -z "${SCRIPT_PATH:-}" ]; then
             echo "::error::No se encontró 01_eventosprox.py en el repo"; exit 1
           fi
           echo "Usando script: $SCRIPT_PATH"
-          # El script usa FLOW_EMAIL/FLOW_PASS del entorno (ya definidos en env del job)
           python "$SCRIPT_PATH"
-          if [ ! -f ./output/events.json ]; then
-            echo "::error::No se generó ./output/events.json"; exit 1
+
+          # El script puede generar output/events.json; normalizamos a 01events.json
+          if [ -f "$OUT_DIR/events.json" ]; then
+            mv -f "$OUT_DIR/events.json" "$OUT_DIR/01events.json"
           fi
-          # Renombrar a 01events.json como salida estándar del workflow
-          mv -f ./output/events.json ./output/01events.json
+          test -f "$OUT_DIR/01events.json" || { echo "::error::No se generó $OUT_DIR/01events.json"; exit 1; }
 
-      - name: Verificar salida
+      - name: Show output
         run: |
-          set -euo pipefail
-          ls -lh ./output
-          # Evito 'jq' para no depender de paquetes extra
-          python - << 'PY'
-          import json,sys
-          d=json.load(open("./output/01events.json",encoding="utf-8"))
-          print("Elementos en 01events.json:", len(d) if isinstance(d,list) else "no-list")
-          PY
+          ls -lh "$OUT_DIR"
+          jq 'length' "$OUT_DIR/01events.json" || true
 
-      - name: Subir artefacto 01events
+      - name: Upload artifact (a01-01events-json)
         uses: actions/upload-artifact@v4
         with:
           name: a01-01events-json
@@ -92,21 +82,10 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      # ---------- Publicación por FTPS (opcional, activada aquí) ----------
-      - name: (FTPS) Listar carpeta remota (previo)
-        env:
-          FTP_SERVER:     ${{ secrets.FTP_SERVER }}
-          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
-          FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
-          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
-        run: |
-          set -euo pipefail
-          BASE="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/Competiciones/ListadoEventos/Workflows/01"
-          echo "Listando: ${BASE}/"
-          # -l lista el índice de la carpeta (si el servidor lo permite)
-          curl --fail --ssl-reqd --user "${FTP_USERNAME}:${FTP_PASSWORD}" "${BASE}/" -l || true
+      - name: Install lftp
+        run: sudo apt-get update && sudo apt-get install -y lftp
 
-      - name: (FTPS) Subir 01events.json (fijo + timestamp)
+      - name: (FTPS) Upload 01events (timestamp + last) with lftp
         env:
           FTP_SERVER:     ${{ secrets.FTP_SERVER }}
           FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
@@ -116,23 +95,25 @@ jobs:
           set -euo pipefail
           FILE="./output/01events.json"
           [ -f "$FILE" ] || { echo "::error::No existe $FILE"; exit 1; }
-
-          BASE="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/Competiciones/ListadoEventos/Workflows/01"
           TS="$(date -u +'%Y%m%dT%H%M%SZ')"
+          REMOTE_BASE="${FTP_REMOTE_DIR}/Competiciones/ListadoEventos/Workflows/01"
 
-          echo "Subiendo (último): ${BASE}/01events_last.json"
-          curl --fail --ssl-reqd --ftp-create-dirs --disable-epsv --ftp-skip-pasv-ip \
-               --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
-               --upload-file "$FILE" \
-               "${BASE}/01events_last.json"
+          lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" <<EOF
+          set cmd:fail-exit true
+          set net:max-retries 2
+          set net:timeout 40
+          set ftp:ssl-force true
+          set ftp:ssl-protect-data true
+          set ftp:passive-mode true
+          set ftp:use-feat true
+          mkdir -p "${REMOTE_BASE}"
+          cd "${REMOTE_BASE}"
+          put -O . "${FILE}" -o "01events_${TS}.json"
+          put -O . "${FILE}" -o "01events_last.json"
+          bye
+          EOF
 
-          echo "Subiendo (histórico): ${BASE}/01events_${TS}.json"
-          curl --fail --ssl-reqd --ftp-create-dirs --disable-epsv --ftp-skip-pasv-ip \
-               --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
-               --upload-file "$FILE" \
-               "${BASE}/01events_${TS}.json"
-
-      - name: (FTPS) Subir (fijo + timestamp) con curl robusto
+      - name: (FTPS) Verify remote hash with lftp
         env:
           FTP_SERVER:     ${{ secrets.FTP_SERVER }}
           FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
@@ -140,34 +121,21 @@ jobs:
           FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
         run: |
           set -euo pipefail
-          FILE="./output/01events.json"
-          [ -f "$FILE" ] || { echo "::error::No existe $FILE"; exit 1; }
-
-          BASE="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/Competiciones/ListadoEventos/Workflows/01"
-          TS="$(date -u +'%Y%m%dT%H%M%SZ')"
-
-          upload() {
-            local src="$1" dst="$2"
-            echo "Subiendo: ${BASE}/${dst}"
-            # Notas:
-            # --ssl-reqd        : FTPS explícito (AUTH TLS) para control y datos
-            # --quote PBSZ/PROT : fuerza protección de datos P (cifrado)
-            # --ftp-method nocwd: evita CWD innecesarios (servidores “quisquillosos”)
-            # --retry           : pequeños reintentos
-            # (quité --disable-epsv/--ftp-skip-pasv-ip: con FTPS suelen causar 426)
-            curl -v --fail --ssl-reqd \
-                 --quote "PBSZ 0" --quote "PROT P" \
-                 --ftp-create-dirs --ftp-method nocwd \
-                 --retry 3 --retry-delay 2 \
-                 --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
-                 --upload-file "$src" \
-                 "${BASE}/${dst}"
-          }
-
-          # 1) Subo copia con timestamp
-          upload "$FILE" "01events_${TS}.json"
-          # Pausa breve para evitar 426 por doble transferencia inmediata
-          sleep 3
-          # 2) Subo nombre fijo (para consumo)
-          upload "$FILE" "01events_last.json"
-
+          REMOTE_BASE="${FTP_REMOTE_DIR}/Competiciones/ListadoEventos/Workflows/01"
+          mkdir -p ./verify
+          lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" <<EOF
+          set cmd:fail-exit true
+          set net:max-retries 1
+          set net:timeout 40
+          set ftp:ssl-force true
+          set ftp:ssl-protect-data true
+          set ftp:passive-mode true
+          cd "${REMOTE_BASE}"
+          get -O ./verify "01events_last.json"
+          bye
+          EOF
+          sha256sum ./verify/01events_last.json | awk '{print $1}' > remote.sha256
+          sha256sum ./output/01events.json     | awk '{print $1}' > local.sha256
+          echo "Hash local : $(cat local.sha256)"
+          echo "Hash remoto: $(cat remote.sha256)"
+          diff -q local.sha256 remote.sha256 && echo "OK: hash coincide"
