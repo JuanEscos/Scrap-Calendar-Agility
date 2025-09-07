@@ -1,24 +1,35 @@
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-02_eventosproxINFO.py (adaptado para GitHub Actions)
-- No chdir a rutas Windows
-- Credenciales vía variables de entorno (FLOW_EMAIL/FLOW_PASS o FLOW_USER_EMAIL/FLOW_USER_PASSWORD)
-- HEADLESS configurable con env
-- Argumentos: [input_json] [output_json]
+02_eventosproxINFO.py
+- Lee ./output/01events.json (o el que pases por CLI) y visita el enlace /info de cada evento.
+- Extrae información básica (título, fechas, ubicación, precios, pruebas, contacto…).
+- Escribe ./output/02competiciones_detalladas.json (o el que pases por CLI).
+- Usa credenciales de ENV: FLOW_EMAIL / FLOW_PASS.
+- Guarda screenshot en caso de error para depuración.
 """
 
-import os, json, time, re, sys, random
+import os, sys, json, time, re
 from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 
 BASE = "https://www.flowagility.com"
+HEADLESS  = os.getenv("HEADLESS", "true").strip().lower() in ("1","true","yes","on")
+INCOGNITO = os.getenv("INCOGNITO","true").strip().lower() in ("1","true","yes","on")
+
+FLOW_EMAIL = os.getenv("FLOW_EMAIL", "").strip()
+FLOW_PASS  = os.getenv("FLOW_PASS", "").strip()
+
 OUT_DIR = "./output"
-COMPETITIONS_FILE = os.path.join(OUT_DIR, 'competiciones_agility.json')
-DETAILED_FILE     = os.path.join(OUT_DIR, 'competiciones_detalladas.json')
 os.makedirs(OUT_DIR, exist_ok=True)
 
+# Entradas/salidas (CLI o por defecto)
+IN_PATH  = sys.argv[1] if len(sys.argv) > 1 else os.path.join(OUT_DIR, "01events.json")
+OUT_PATH = sys.argv[2] if len(sys.argv) > 2 else os.path.join(OUT_DIR, "02competiciones_detalladas.json")
+
 def log(m): print(f"[{time.strftime('%H:%M:%S')}] {m}", flush=True)
-def slow_pause(a=1.0, b=2.0): time.sleep(random.uniform(a, b))
+def slow_pause(a=0.8, b=1.8):
+    import random, time as _t; _t.sleep(random.uniform(a,b))
 
 def _import_selenium():
     from selenium import webdriver
@@ -30,11 +41,12 @@ def _import_selenium():
     from selenium.webdriver.chrome.service import Service
     return webdriver, By, Options, WebDriverWait, EC, TimeoutException, NoSuchElementException, WebDriverException, Service
 
-def _get_driver(headless=True):
+def _get_driver():
     webdriver, By, Options, *_ = _import_selenium()
     from selenium.webdriver.chrome.service import Service
     opts = Options()
-    if headless: opts.add_argument("--headless=new")
+    if HEADLESS:  opts.add_argument("--headless=new")
+    if INCOGNITO: opts.add_argument("--incognito")
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
     opts.add_argument("--window-size=1920,1080")
@@ -44,171 +56,193 @@ def _get_driver(headless=True):
         from webdriver_manager.chrome import ChromeDriverManager
         service = Service(ChromeDriverManager().install())
         return webdriver.Chrome(service=service, options=opts)
-    except ImportError:
-        log("webdriver_manager no instalado; usando chromedriver del sistema")
+    except Exception:
         return webdriver.Chrome(options=opts)
+
+def _save_screenshot(driver, name="02_error.png"):
+    try:
+        path = os.path.join(OUT_DIR, name)
+        driver.save_screenshot(path)
+        log(f"Screenshot -> {path}")
+    except Exception:
+        pass
 
 def _accept_cookies(driver, By):
     try:
-        for sel in ('[data-testid="uc-accept-all-button"]','button[aria-label="Accept all"]','button[aria-label="Aceptar todo"]','button[mode="primary"]'):
+        for sel in (
+            '[data-testid="uc-accept-all-button"]',
+            'button[aria-label="Accept all"]',
+            'button[aria-label="Aceptar todo"]',
+            'button[mode="primary"]',
+        ):
             btns = driver.find_elements(By.CSS_SELECTOR, sel)
             if btns:
-                driver.execute_script("arguments[0].click();", btns[0])
-                slow_pause(0.8, 1.6)
+                btns[0].click(); slow_pause(0.4,0.8)
                 return
         driver.execute_script("""
-          const b=[...document.querySelectorAll('button')].find(x=>/acept|accept|consent|de acuerdo/i.test(x.textContent));
-          if(b) b.click();
+            const b=[...document.querySelectorAll('button')]
+            .find(x=>/acept|accept|consent|de acuerdo/i.test(x.textContent));
+            if(b) b.click();
         """)
-        slow_pause(0.2, 0.5)
+        slow_pause(0.2,0.6)
     except Exception:
         pass
 
 def _login(driver, By, WebDriverWait, EC):
-    # admite dos juegos de nombres por si en el repo existen distintos secrets
-    email = os.getenv("FLOW_EMAIL") or os.getenv("FLOW_USER_EMAIL") or ""
-    pwd   = os.getenv("FLOW_PASS")  or os.getenv("FLOW_USER_PASSWORD") or ""
-    if not email or not pwd:
-        raise RuntimeError("Faltan credenciales (FLOW_EMAIL/FLOW_PASS o FLOW_USER_EMAIL/FLOW_USER_PASSWORD).")
-    log("Iniciando login…")
+    if not FLOW_EMAIL or not FLOW_PASS:
+        raise RuntimeError("Faltan FLOW_EMAIL/FLOW_PASS en el entorno.")
+    log("Login…")
     driver.get(f"{BASE}/user/login")
     wait = WebDriverWait(driver, 25)
-    email_el = wait.until(EC.presence_of_element_located((By.NAME, "user[email]")))
-    pwd_el   = driver.find_element(By.NAME, "user[password]")
-    email_el.clear(); email_el.send_keys(email); slow_pause(0.3, 0.6)
-    pwd_el.clear();   pwd_el.send_keys(pwd);     slow_pause(0.3, 0.6)
+    email = wait.until(EC.presence_of_element_located((By.NAME, "user[email]")))
+    pwd   = driver.find_element(By.NAME, "user[password]")
+    email.clear(); email.send_keys(FLOW_EMAIL); slow_pause(0.2,0.4)
+    pwd.clear();   pwd.send_keys(FLOW_PASS);    slow_pause(0.2,0.4)
     driver.find_element(By.CSS_SELECTOR, 'button[type="submit"]').click()
     wait.until(lambda d: "/user/login" not in d.current_url)
-    slow_pause(1.0, 1.8)
-    log("Login OK")
+    slow_pause(0.6,1.0)
+    log("Login OK.")
 
-def extract_detailed_info(driver, info_url, event_base_info):
-    """Extrae información detallada desde /info del evento"""
-    try:
-        log(f"Info: {info_url}")
-        driver.get(info_url)
-        _accept_cookies(driver, driver.__class__.By if hasattr(driver.__class__, 'By') else __import__('selenium').webdriver.common.by.By)  # no rompe si ya aceptaste
-        slow_pause(1.5, 2.5)
-        soup = BeautifulSoup(driver.page_source, 'html.parser')
+def _extract_info_from_html(html, base_event):
+    """Parsea la página /info y devuelve un dict extendiendo el evento base."""
+    soup = BeautifulSoup(html, "html.parser")
+    out = dict(base_event) if isinstance(base_event, dict) else {}
 
-        detailed = event_base_info.copy()
+    # Título
+    h1 = soup.find('h1') or soup.find(['h2','h3'])
+    if h1: out['titulo'] = h1.get_text(strip=True)
 
-        # ---- INFO GENERAL ----
-        general = {}
-        title_elem = soup.find('h1') or soup.find(['h2','h3'])
-        if title_elem: general['titulo'] = title_elem.get_text(strip=True)
+    # Fechas y ubicación (heurística simple, flexible)
+    text_blocks = soup.find_all(['div','span','p'])
+    fecha_txt = None; ubic_txt = None
+    for el in text_blocks:
+        t = el.get_text(" ", strip=True)
+        if not t: continue
+        if not fecha_txt and re.search(r'\b(\d{1,2}\s*[/-]\s*\d{1,2}|\b(Ene|Feb|Mar|Abr|May|Jun|Jul|Ago|Sep|Oct|Nov|Dic|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b)', t, re.I):
+            if len(t) < 90: fecha_txt = t
+        if not ubic_txt and re.search(r'\b(Spain|España|Portugal|France|Italia|Germany|Belgium|Netherlands|UK|Ireland)\b', t, re.I):
+            if len(t) < 90: ubic_txt = t
+        if fecha_txt and ubic_txt: break
 
-        for elem in soup.find_all('div', class_=lambda x: x and 'text' in x.lower()):
-            text = elem.get_text(strip=True)
-            if ' - ' in text and len(text) < 60:
-                general['fechas_completas'] = text
-            elif any(w in text.lower() for w in ['spain','españa','madrid','barcelona']):
-                general['ubicacion_completa'] = text
+    out.setdefault('informacion_general', {})
+    if fecha_txt: out['informacion_general']['fechas_completas'] = fecha_txt
+    if ubic_txt:  out['informacion_general']['ubicacion_completa'] = ubic_txt
 
-        # ---- INSCRIPCION ----
-        insc = {}
-        for elem in soup.find_all('div', class_=lambda x: x and any(w in str(x).lower() for w in ['date','fecha','inscrip'])):
-            t = elem.get_text(strip=True)
-            if 'inscrip' in t.lower() or 'registration' in t.lower():
-                insc['periodo_inscripcion'] = t
-        for elem in soup.find_all(lambda tag: tag.name in ['div','span'] and any(w in tag.get_text().lower() for w in ['€','euro','precio','price','coste'])):
-            t = elem.get_text(strip=True)
-            if '€' in t: insc['precios'] = t
+    # Inscripción: precios/periodos
+    reg = {}
+    for el in text_blocks:
+        t = el.get_text(" ", strip=True)
+        if not t: continue
+        if re.search(r'(inscrip|regist|registration)', t, re.I) and len(t) < 140:
+            reg['periodo_inscripcion'] = t
+        if ('€' in t or 'EUR' in t.upper()) and len(t) < 140:
+            reg['precios'] = t
+    if reg: out['inscripcion'] = reg
 
-        # ---- PRUEBAS ----
-        pruebas = []
-        sections = soup.find_all(['div','section'], class_=lambda x: x and any(w in str(x).lower() for w in ['prueba','competition','event','round']))
-        for s in sections:
-            item = {}
-            t = s.find(['h2','h3','h4','strong'])
-            if t: item['nombre'] = t.get_text(strip=True)
-            for e in s.find_all(lambda tag: any(w in tag.get_text().lower() for w in ['hora','time','horario','schedule'])):
-                item['horarios'] = e.get_text(strip=True)
-            for e in s.find_all(lambda tag: any(w in tag.get_text().lower() for w in ['categor','level','nivel','class'])):
-                item['categorias'] = e.get_text(strip=True)
-            if item: pruebas.append(item)
+    # Pruebas (muy laxo; lista simples de bloques con palabras clave)
+    pruebas = []
+    for sec in soup.find_all(['div','section']):
+        txt = sec.get_text(" ", strip=True)
+        if not txt: continue
+        if re.search(r'(prueba|manga|round|agility|jumping|event)', txt, re.I):
+            tit = None
+            for h in sec.find_all(['h2','h3','h4','strong']):
+                ht = h.get_text(" ", strip=True)
+                if ht and 3 <= len(ht) <= 120:
+                    tit = ht; break
+            pruebas.append({"nombre": tit or txt[:60]})
+    if pruebas: out['pruebas'] = pruebas
 
-        # ---- CONTACTO ----
-        contacto = {}
-        for e in soup.find_all(lambda tag: '@' in tag.get_text() and '.' in tag.get_text()):
-            contacto['email'] = e.get_text(strip=True)
-        for e in soup.find_all(lambda tag: any(w in tag.get_text() for w in ['+34','tel:','phone','tlf'])):
-            contacto['telefono'] = e.get_text(strip=True)
+    # Contacto
+    contacto = {}
+    # email
+    for a in soup.find_all(text=re.compile(r'@.*\.', re.I)):
+        t = a.strip()
+        if len(t) < 120:
+            contacto['email'] = t; break
+    # teléfono
+    for a in soup.find_all(text=re.compile(r'\+?\d[\d\s-]{6,}', re.I)):
+        t = a.strip()
+        if len(t) < 40:
+            contacto['telefono'] = t; break
+    if contacto: out['contacto'] = contacto
 
-        # ---- ENLACES ADICIONALES ----
-        extra = {}
-        for a in soup.find_all('a', href=lambda x: x and any(w in x.lower() for w in ['reglamento','regulation','normas','rules'])):
-            extra['reglamento'] = urljoin(BASE, a['href'])
-        for a in soup.find_all('a', href=lambda x: x and any(w in x.lower() for w in ['map','ubicacion','location','google'])):
-            extra['mapa'] = urljoin(BASE, a['href'])
+    return out
 
-        detailed.update({
-            'informacion_general': general,
-            'inscripcion': insc,
-            'pruebas': pruebas,
-            'contacto': contacto,
-            'enlaces_adicionales': extra,
-            'url_detalle': info_url,
-            'timestamp_extraccion': time.strftime('%Y-%m-%d %H:%M:%S')
-        })
-        return detailed
-    except Exception as e:
-        log(f"Error en {info_url}: {e}")
-        return event_base_info
+def _get_info_url(ev):
+    """Intenta obtener la URL /info desde varias estructuras posibles."""
+    if isinstance(ev, dict):
+        enlaces = ev.get("enlaces") or {}
+        if isinstance(enlaces, dict) and enlaces.get("info"):
+            return enlaces["info"]
+        # A veces viene 'event_url' base => derivar /info
+        if ev.get("event_url"):
+            base = ev["event_url"].rstrip("/")
+            return base + "/info"
+    return None
 
 def main():
-    log("=== EXTRACCIÓN DE INFORMACIÓN DETALLADA DE COMPETICIONES ===")
-    in_path  = sys.argv[1] if len(sys.argv) >= 2 else COMPETITIONS_FILE
-    out_path = sys.argv[2] if len(sys.argv) >= 3 else DETAILED_FILE
-
-    if not os.path.exists(in_path):
-        log(f"Error: No existe {in_path}")
+    # Cargar base de eventos
+    if not os.path.exists(IN_PATH):
+        log(f"❌ No existe input: {IN_PATH}")
+        # Para no romper la cadena, graba salida vacía
+        with open(OUT_PATH, "w", encoding="utf-8") as f:
+            json.dump([], f, ensure_ascii=False, indent=2)
         sys.exit(1)
 
-    with open(in_path, 'r', encoding='utf-8') as f:
-        comps = json.load(f)
+    with open(IN_PATH, "r", encoding="utf-8") as f:
+        base_events = json.load(f)
+    if not isinstance(base_events, list):
+        log("⚠️ El input no es una lista. Escribo salida vacía.")
+        with open(OUT_PATH, "w", encoding="utf-8") as f:
+            json.dump([], f, ensure_ascii=False, indent=2)
+        sys.exit(1)
 
-    log(f"Cargadas {len(comps)} competiciones desde {in_path}")
+    (webdriver, By, Options, WebDriverWait, EC,
+     TimeoutException, NoSuchElementException, WebDriverException, Service) = _import_selenium()
 
-    webdriver, By, Options, WebDriverWait, EC, *_ = _import_selenium()
-    headless = os.getenv("HEADLESS", "true").lower() == "true"
-    driver = _get_driver(headless=headless)
-
+    driver = _get_driver()
+    detailed = []
     try:
         _login(driver, By, WebDriverWait, EC)
 
-        out = []
-        for i, c in enumerate(comps, 1):
+        for i, ev in enumerate(base_events, 1):
             try:
-                info_url = c.get('enlaces', {}).get('info', '')
-                if info_url:
-                    log(f"[{i}/{len(comps)}] {c.get('nombre','(sin nombre)')}")
-                    out.append(extract_detailed_info(driver, info_url, c))
-                    slow_pause(1.2, 2.4)
-                else:
-                    log(f"[{i}] Sin enlace de info → se conserva base")
-                    out.append(c)
+                info_url = _get_info_url(ev)
+                if not info_url:
+                    # sin /info, añade el evento tal cual
+                    detailed.append(ev); continue
+
+                log(f"[{i}/{len(base_events)}] INFO -> {info_url}")
+                driver.get(info_url)
+                WebDriverWait(driver, 20).until(lambda d: d.find_element(By.TAG_NAME, "body"))
+                _accept_cookies(driver, By)
+                slow_pause()
+
+                html = driver.page_source
+                d = _extract_info_from_html(html, ev)
+                d['url_detalle'] = info_url
+                d['timestamp_extraccion'] = time.strftime('%Y-%m-%d %H:%M:%S')
+                detailed.append(d)
+                slow_pause(0.6, 1.4)
+
             except Exception as e:
-                log(f"Error procesando {i}: {e}"); out.append(c)
+                log(f"[WARN] Falló {ev.get('event_url','<sin url>')}: {e}")
+                detailed.append(ev)  # conserva base
+                continue
 
-        with open(out_path, 'w', encoding='utf-8') as f:
-            json.dump(out, f, ensure_ascii=False, indent=2)
-        log(f"✅ Guardado: {out_path}")
-
-        comp_con_info   = sum(1 for c in out if 'informacion_general' in c)
-        comp_con_precios= sum(1 for c in out if 'inscripcion' in c and 'precios' in c['inscripcion'])
-        comp_con_pruebas= sum(1 for c in out if 'pruebas' in c and c['pruebas'])
-        print("\n" + "="*80)
-        print("RESUMEN DE INFORMACIÓN EXTRAÍDA:")
-        print("="*80)
-        print(f"Competiciones procesadas: {len(out)}")
-        print(f"Con información general: {comp_con_info}")
-        print(f"Con precios: {comp_con_precios}")
-        print(f"Con pruebas detalladas: {comp_con_pruebas}")
+    except Exception as e:
+        log(f"ERROR general 02: {e}")
+        _save_screenshot(driver, "02_error.png")
     finally:
         try: driver.quit()
         except Exception: pass
-        log("Navegador cerrado")
+        log("Navegador cerrado.")
+
+    # Siempre escribe salida (aunque venga sin enriquecer)
+    with open(OUT_PATH, "w", encoding="utf-8") as f:
+        json.dump(detailed, f, ensure_ascii=False, indent=2)
+    log(f"✅ Guardado {len(detailed)} items en {OUT_PATH}")
 
 if __name__ == "__main__":
     main()
