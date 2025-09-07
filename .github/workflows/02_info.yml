@@ -11,29 +11,21 @@ permissions:
   actions: read
 
 concurrency:
-  group: participantes-02
+  group: info-02
   cancel-in-progress: true
 
 jobs:
   produce_02info:
     if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
     env:
       TZ: Europe/Madrid
-      # credenciales para Selenium (usa las mismas que 01/03)
-      FLOW_EMAIL: ${{ secrets.FLOW_EMAIL }}
-      FLOW_PASS:  ${{ secrets.FLOW_PASS }}
+      FLOW_USER_EMAIL: ${{ secrets.FLOW_EMAIL }}
+      FLOW_USER_PASSWORD: ${{ secrets.FLOW_PASS }}
       HEADLESS: "true"
-      INCOGNITO: "true"
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Debug repo tree
-        run: |
-          echo "EVENT: $GITHUB_EVENT_NAME  BRANCH: $GITHUB_REF_NAME"
-          git ls-files | head -n 200 || true
 
       - uses: actions/setup-python@v5
         with:
@@ -41,17 +33,18 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.txt
 
-      - name: Install deps
+      - name: Instalar dependencias
         run: |
-          python -m pip install --upgrade pip setuptools wheel
+          set -euo pipefail
+          python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install "selenium==4.*" "webdriver-manager==4.*" beautifulsoup4 lxml python-dateutil
+          pip install "selenium==4.*" "webdriver-manager==4.*" beautifulsoup4 lxml
 
-      - name: Setup Chrome
+      - name: Setup Chrome (para Selenium)
         uses: browser-actions/setup-chrome@v1
 
-      # ----- artefacto 01 (modo encadenado) -----
-      - name: Download 01 artifact (chained)
+      # --- Artefacto del 01 ---
+      - name: Descargar 01events (modo encadenado)
         if: ${{ github.event_name == 'workflow_run' }}
         uses: actions/download-artifact@v4
         with:
@@ -60,60 +53,55 @@ jobs:
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      # ----- artefacto 01 (fallback manual) -----
-      - name: Install jq & unzip (manual)
-        if: ${{ github.event_name == 'workflow_dispatch' }}
-        run: sudo apt-get update && sudo apt-get install -y jq unzip
-
-      - name: Fetch latest a01-01events-json (manual)
+      - name: Descargar 01events (modo manual: último disponible)
         if: ${{ github.event_name == 'workflow_dispatch' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           repo="${{ github.repository }}"
-          best_id=""; best_ts=""
-          for page in 1 2 3 4 5; do
-            resp=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-                   "https://api.github.com/repos/${repo}/actions/artifacts?per_page=100&page=${page}")
+          best=""
+          page=1
+          while :; do
+            resp=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+                           -H "Accept: application/vnd.github+json" \
+                           "https://api.github.com/repos/${repo}/actions/artifacts?per_page=100&page=${page}")
             n=$(echo "$resp" | jq '.artifacts | length')
             [ "$n" -eq 0 ] && break
-            while read -r id ts; do
-              if [ -z "$best_ts" ] || [ "$(date -d "$ts" +%s)" -gt "$(date -d "$best_ts" +%s)" ]; then
-                best_id="$id"; best_ts="$ts"
-              fi
-            done < <(echo "$resp" | jq -r '.artifacts[] | select(.name=="a01-01events-json" and .expired==false) | "\(.id) \(.updated_at)"')
+            cand=$(echo "$resp" | jq -r '.artifacts[] | select(.name=="a01-01events-json" and .expired==false) | .id' | head -n1)
+            if [ -n "$cand" ]; then best="$cand"; break; fi
+            page=$((page+1))
           done
-          [ -n "$best_id" ] || { echo "::error::No active artifact a01-01events-json"; exit 1; }
+          [ -n "$best" ] || { echo "::error::No hay artefacto a01-01events-json"; exit 1; }
           mkdir -p artifacts01
           curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -L \
-               "https://api.github.com/repos/${repo}/actions/artifacts/${best_id}/zip" -o artifacts01.zip
-          unzip -o artifacts01.zip -d artifacts01
+               "https://api.github.com/repos/${repo}/actions/artifacts/${best}/zip" -o a01.zip
+          unzip -o a01.zip -d artifacts01
           ls -la artifacts01
 
-      - name: Prepare input
+      - name: Preparar entrada/salida para el script
         run: |
           set -euo pipefail
           mkdir -p output
-          test -f ./artifacts01/01events.json || { echo "::error::Missing artifacts01/01events.json"; ls -la artifacts01; exit 1; }
-          cp -f ./artifacts01/01events.json ./output/competiciones_agility.json
+          # El artefacto del 01 debe contener 01events_last.json o 01events.json
+          if [ -f ./artifacts01/01events_last.json ]; then
+            cp -f ./artifacts01/01events_last.json ./output/01events_last.json
+          elif [ -f ./artifacts01/01events.json ]; then
+            cp -f ./artifacts01/01events.json ./output/01events_last.json
+          else
+            echo "::error::No se encontró 01events_last.json ni 01events.json en artifacts01"; exit 1
+          fi
+          echo "IN:  ./output/01events_last.json"
+          echo "OUT: ./output/02competiciones_detalladas.json"
 
-      - name: Run 02_eventosproxINFO.py (máx 12 min)
-        timeout-minutes: 12
+      - name: Ejecutar 02_eventosproxINFO.py (con args IN/OUT)
         run: |
           set -euo pipefail
-          SCRIPT_PATH="$(git ls-files | grep -E '(^|/)(02_eventosproxINFO\.py)$' | head -n1 || true)"
-          [ -n "$SCRIPT_PATH" ] || { echo "::error::02_eventosproxINFO.py not found"; exit 1; }
-          if ! timeout 11m python "$SCRIPT_PATH" "./output/competiciones_agility.json" "./output/02competiciones_detalladas.json"; then
-            echo "::error::02_eventosproxINFO.py timed out"
-            pkill -9 -f chrome || true; pkill -9 -f chromedriver || true
-            exit 1
-          fi
-          ls -lh output
+          python "./02_eventosproxINFO.py" "./output/01events_last.json" "./output/02competiciones_detalladas.json"
+          ls -lh ./output
           test -f ./output/02competiciones_detalladas.json
-          sha256sum ./output/02competiciones_detalladas.json | awk '{print $1}' > local.sha256
 
-      - name: Upload artifact a02-02info-json
+      - name: Subir artefacto 02info
         uses: actions/upload-artifact@v4
         with:
           name: a02-02info-json
@@ -121,55 +109,47 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      # ===== FTP debug drop =====
-      - name: Install lftp
+      # ------- Publicación por FTPS -------
+      - name: Instalar lftp
         run: sudo apt-get update && sudo apt-get install -y lftp
 
-      - name: (FTPS) Upload + verify to /Workflows/02 (máx 5 min)
-        timeout-minutes: 5
+      - name: Subir por FTPS (fijo + timestamp) y verificar
         env:
           FTP_SERVER:     ${{ secrets.FTP_SERVER }}
           FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
           FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
-          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
+          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}   # p.ej. /www/NewWeb/Privado
         run: |
           set -euo pipefail
-          FILE="./output/02competiciones_detalladas.json"
+          SRC="./output/02competiciones_detalladas.json"
+          [ -f "$SRC" ] || { echo "::error::Falta $SRC"; exit 1; }
           TS="$(date -u +'%Y%m%dT%H%M%SZ')"
-          DEST_DIR="$(printf "%s/Competiciones/ListadoEventos/Workflows/02" "${FTP_REMOTE_DIR%/}")"
+          DEST_DIR="${FTP_REMOTE_DIR%/}/Competiciones/ListadoEventos/Workflows/02"
 
-          lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" -e " \
-            set cmd:fail-exit true; set net:timeout 25; set net:max-retries 1; set net:persist-retries 0; \
-            set ftp:ssl-force true; set ftp:ssl-protect-data true; set ftp:passive-mode true; set ftp:prefer-epsv false; \
-            set ssl:verify-certificate no; \
-            cd '${FTP_REMOTE_DIR}' || cd '/${FTP_REMOTE_DIR}'; \
-            mkdir -f Competiciones; cd Competiciones; mkdir -f ListadoEventos; cd ListadoEventos; \
-            mkdir -f Workflows; cd Workflows; mkdir -f 02; cd 02; \
-            put -O . '${FILE}' -o '02info_last.json'; \
-            put -O . '${FILE}' -o '02info_${TS}.json'; \
-            bye"
+          echo "Destino: ftp://${FTP_SERVER}${DEST_DIR}"
+          sha256sum "$SRC" | awk '{print $1}' > local.sha256
 
-          rm -rf dl && mkdir -p dl
-          lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" -e " \
-            set cmd:fail-exit true; set net:timeout 25; set net:max-retries 1; \
-            set ftp:ssl-force true; set ftp:ssl-protect-data true; set ftp:passive-mode true; set ftp:prefer-epsv false; \
-            set ssl:verify-certificate no; \
-            cd '${DEST_DIR}' || cd '/${DEST_DIR}'; \
-            get -O '${PWD}/dl' '02info_last.json'; \
-            bye"
-          sha256sum dl/02info_last.json | awk '{print $1}' > remote.sha256
-          diff -q local.sha256 remote.sha256
+          # Subida con lftp (TLS explícito / puerto 21)
+          lftp -u "${FTP_USERNAME}","${FTP_PASSWORD}" "ftp://${FTP_SERVER}" <<EOF
+set net:timeout 20
+set net:max-retries 3
+set net:persist-retry 2
+set ftp:passive-mode true
+set ftp:ssl-force true
+set ftp:ssl-protect-data true
+set ssl:verify-certificate no
+mkdir -p -f ${DEST_DIR}
+cd ${DEST_DIR}
+put -O . ${SRC} -o 02info_last.json
+put -O . ${SRC} -o 02info_${TS}.json
+bye
+EOF
 
-      - name: (FTPS) List (always)
-        if: always()
-        env:
-          FTP_SERVER:     ${{ secrets.FTP_SERVER }}
-          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
-          FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
-          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
-        run: |
-          lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" -e " \
-            set cmd:fail-exit false; set net:timeout 15; \
-            cd '${FTP_REMOTE_DIR}' || cd '/${FTP_REMOTE_DIR}'; \
-            cls -1 -R | grep -Ei '(^|/)(02info_.*\.json|02info_last\.json)$' || true; \
-            bye"
+          # Verificar descargando la copia fija
+          curl --fail --ssl-reqd --disable-epsv --ftp-skip-pasv-ip \
+               --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
+               --output remote.json "ftp://${FTP_SERVER}${DEST_DIR}/02info_last.json"
+          sha256sum remote.json | awk '{print $1}' > remote.sha256
+          echo "Local : $(cat local.sha256)"
+          echo "Remoto: $(cat remote.sha256)"
+          diff -q local.sha256 remote.sha256 && echo "OK: hash coincide"
