@@ -63,6 +63,62 @@ jobs:
           name: a01-debug
           path: |
             ./output/**
+            - name: (FTPS) Listar carpeta remota (previo)
+        env:
+          FTP_SERVER:     ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
+          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
+        run: |
+          set -euo pipefail
+          BASE="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/ListadoEventos/Workflows/01"
+          echo "Listando: ${BASE}/"
+          curl --fail --ssl-reqd --user "${FTP_USERNAME}:${FTP_PASSWORD}" "${BASE}/" -l || true
+
+      - name: (FTPS) Subir 01events.json (fijo + timestamp)
+        env:
+          FTP_SERVER:     ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
+          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
+        run: |
+          set -euo pipefail
+          FILE="./output/01events.json"
+          [ -f "$FILE" ] || { echo "::error::No existe $FILE"; exit 1; }
+          BASE="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/ListadoEventos/Workflows/01"
+          TS="$(date -u +'%Y%m%dT%H%M%SZ')"
+
+          echo "Subiendo (último): ${BASE}/01events_last.json"
+          curl --fail --ssl-reqd --ftp-create-dirs --disable-epsv --ftp-skip-pasv-ip \
+               --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
+               --upload-file "$FILE" \
+               "${BASE}/01events_last.json"
+
+          echo "Subiendo (histórico): ${BASE}/01events_${TS}.json"
+          curl --fail --ssl-reqd --ftp-create-dirs --disable-epsv --ftp-skip-pasv-ip \
+               --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
+               --upload-file "$FILE" \
+               "${BASE}/01events_${TS}.json"
+
+      - name: (FTPS) Verificar remoto (hash)
+        env:
+          FTP_SERVER:     ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
+          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
+        run: |
+          set -euo pipefail
+          FILE="./output/01events.json"
+          BASE="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/ListadoEventos/Workflows/01"
+          sha256sum "$FILE" | awk '{print $1}' > local.sha256
+          curl --fail --ssl-reqd --disable-epsv --ftp-skip-pasv-ip \
+               --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
+               --output remote.json "${BASE}/01events_last.json"
+          sha256sum remote.json | awk '{print $1}' > remote.sha256
+          echo "Local : $(cat local.sha256)"
+          echo "Remoto: $(cat remote.sha256)"
+          diff -q local.sha256 remote.sha256 && echo "OK: hash coincide"
+
             ./01_error.png
           if-no-files-found: warn
           retention-days: 7
