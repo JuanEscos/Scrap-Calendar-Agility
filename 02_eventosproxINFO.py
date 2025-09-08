@@ -126,7 +126,7 @@ def _login(driver, By, WebDriverWait, EC):
     log("Login…")
     driver.get(f"{BASE}/user/login")
     wait = WebDriverWait(driver, 25)
-    email = wait.until(EC.presence_of_element_located((By.NAME, "user[email]"))))
+    email = wait.until(EC.presence_of_element_located((By.NAME, "user[email]")))
     pwd   = driver.find_element(By.NAME, "user[password]")
     email.clear(); email.send_keys(FLOW_EMAIL); slow_pause(0.2, 0.6)
     pwd.clear();   pwd.send_keys(FLOW_PASS);    slow_pause(0.2, 0.6)
