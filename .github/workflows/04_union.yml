@@ -1,320 +1,171 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-04_eventosproxUnion.py  (ENRIQUECIDO)
-Une la salida de participantes (03) con la de eventos (01).
+name: 04 - Union participantes
 
-Uso:
-  python 04_eventosproxUnion.py <PARTS_IN> <EVENTS_IN> <FINAL_OUT>
+on:
+  workflow_run:
+    workflows: ["03 - Participantes (scrape + process)"]
+    types: [completed]
+  workflow_dispatch: {}
 
-Parámetros:
-  - PARTS_IN  : archivo o carpeta con participantes
-                (participantes.json / participantes_*.json / participantes_procesado_*.csv / 03participantes_*.csv / ...)
-  - EVENTS_IN : archivo o carpeta con eventos 01
-                (01events_last.json / 01events_*.json / 01events.json / events.json)
-  - FINAL_OUT : (opcional) salida JSON. Por defecto ./output/participants_completos_final.json
-"""
+permissions:
+  contents: read
+  actions: read
 
-import os
-import sys
-import json
-import csv
-import re
-from glob import glob
-from pathlib import Path
-from datetime import datetime
+concurrency:
+  group: participantes-union
+  cancel-in-progress: true
 
-# --------------------- Config/Args ---------------------
-OUT_DIR_DEFAULT = "./output"
-FINAL_OUT_DEFAULT = "./output/participants_completos_final.json"
+jobs:
+  union_participants:
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') }}
+    runs-on: ubuntu-latest
+    env:
+      TZ: Europe/Madrid
 
-def arg_or_default(i, default):
-    return sys.argv[i] if len(sys.argv) > i and str(sys.argv[i]).strip() else default
+    steps:
+      - uses: actions/checkout@v4
 
-PARTS_IN  = arg_or_default(1, OUT_DIR_DEFAULT)
-EVENTS_IN = arg_or_default(2, OUT_DIR_DEFAULT)
-FINAL_OUT = arg_or_default(3, FINAL_OUT_DEFAULT)
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
-def is_file(p): return os.path.isfile(p)
-def is_dir(p):  return os.path.isdir(p)
-def ext(p):     return os.path.splitext(p.lower())[1]
+      # ---------- PARTICIPANTES (03) ----------
+      # Automático (encadenado): descargar artefacto del run que dispara
+      - name: Descargar artefacto 03 (workflow_run)
+        if: ${{ github.event_name == 'workflow_run' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: a03-participants-processed
+          run-id: ${{ github.event.workflow_run.id }}
+          path: ./artifacts03
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
-def newest(paths):
-    """Devuelve el path más reciente (desempata por fecha YYYY-MM-DD en nombre si existe)."""
-    if not paths:
-        return None
-    def date_key(p):
-        m = re.search(r"(\d{4}-\d{2}-\d{2})", os.path.basename(p))
-        return m.group(1) if m else "0000-00-00"
-    return sorted(paths, key=lambda p: (date_key(p), os.path.getmtime(p)))[-1]
+      # Manual: buscar y bajar el último artefacto 'a03-participants-processed'
+      - name: Herramientas para descarga manual
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        run: sudo apt-get update && sudo apt-get install -y jq unzip
 
-# --------------------- Loaders -------------------------
-def load_json_list(path):
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    if isinstance(data, list):
-        return data
-    if isinstance(data, dict) and isinstance(data.get("records"), list):
-        return data["records"]
-    raise ValueError(f"JSON inesperado en '{path}'. Se esperaba lista o {{'records':[ ... ]}}.")
+      - name: Descargar ÚLTIMO artefacto 03 (manual)
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          repo="${{ github.repository }}"
+          best_id=""
+          best_ts=""
+          page=1
+          while :; do
+            resp=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+                   "https://api.github.com/repos/${repo}/actions/artifacts?per_page=100&page=${page}")
+            n=$(echo "$resp" | jq '.artifacts | length')
+            [ "$n" -eq 0 ] && break
+            while read -r id ts; do
+              if [ -z "$best_ts" ] || [ "$(date -d "$ts" +%s)" -gt "$(date -d "$best_ts" +%s)" ]; then
+                best_id="$id"; best_ts="$ts"
+              fi
+            done < <(echo "$resp" | jq -r '.artifacts[] | select(.name=="a03-participants-processed" and .expired==false) | "\(.id) \(.updated_at)"')
+            page=$((page+1))
+          done
+          [ -n "$best_id" ] || { echo "::error::No hay artefacto activo llamado a03-participants-processed"; exit 1; }
+          echo "Descargando artifact id=$best_id (updated_at=$best_ts)"
+          mkdir -p artifacts03
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -L \
+               "https://api.github.com/repos/${repo}/actions/artifacts/${best_id}/zip" \
+               -o artifacts03.zip
+          unzip -o artifacts03.zip -d ./artifacts03
+          ls -la ./artifacts03 || true
 
-def load_csv_rows(path):
-    rows=[]
-    with open(path, newline="", encoding="utf-8-sig") as f:
-        r = csv.DictReader(f)
-        for row in r:
-            rows.append({k: (v.strip() if isinstance(v, str) else v) for k, v in row.items()})
-    return rows
+      # ---------- EVENTOS (01) ----------
+      # Descarga del 01 desde FTP: 01events_last.json
+      - name: Instalar lftp
+        run: sudo apt-get update && sudo apt-get install -y lftp
 
-def globs_rec(root, *patterns):
-    out=[]
-    root = os.path.abspath(root)
-    for pat in patterns:
-        out += glob(os.path.join(root, "**", pat), recursive=True)
-    return out
+      - name: Descargar 01events_last.json desde FTP
+        env:
+          FTP_SERVER:     ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
+          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts01
+          REMOTE_BASE="${FTP_REMOTE_DIR}/Competiciones/ListadoEventos/Workflows/01"
+          echo "Descargando de: ${FTP_SERVER}${REMOTE_BASE}/01events_last.json"
+          lftp -u "${FTP_USERNAME}","${FTP_PASSWORD}" "${FTP_SERVER}" -e "\
+            set net:timeout 20; set net:max-retries 3; set net:persist-retry 2; \
+            set ftp:passive-mode true; set ftp:ssl-force true; set ftp:ssl-protect-data true; set ssl:verify-certificate no; \
+            get -O ./artifacts01 \"${REMOTE_BASE}/01events_last.json\"; bye"
+          ls -la ./artifacts01 || true
 
-# ---------- Descubrimiento: PARTICIPANTES (03) ----------
-def find_participants_sources(root_or_file):
-    if is_file(root_or_file):
-        if ext(root_or_file) in (".json", ".csv"):
-            return [root_or_file], ext(root_or_file)
-        raise ValueError(f"Extensión no soportada para participantes: {root_or_file}")
+      - name: Comprobación entradas descargadas
+        run: |
+          echo "Contenido artifacts03:"
+          find ./artifacts03 -maxdepth 2 -type f -printf "%P\n" || true
+          echo "Contenido artifacts01:"
+          find ./artifacts01 -maxdepth 2 -type f -printf "%P\n" || true
 
-    if is_dir(root_or_file):
-        # 1) Consolidado JSON
-        j = globs_rec(root_or_file, "participantes.json", "participants.json")
-        if j:
-            return [newest(j)], ".json"
-        # 2) Múltiples JSON
-        j = globs_rec(root_or_file, "participantes_*.json", "participants_*.json")
-        j = [p for p in j if not re.search(r"progress|tmp|test", os.path.basename(p), re.I)]
-        if j:
-            return sorted(set(j)), ".json"
-        # 3) CSV varios
-        c = globs_rec(root_or_file,
-                      "participantes_procesado_*.csv",
-                      "03participantes_*.csv",
-                      "participants_procesado_*.csv",
-                      "participants_*.csv",
-                      "participantes_*.csv")
-        c = [p for p in c if not re.search(r"progress|events|tmp|test", os.path.basename(p), re.I)]
-        if c:
-            return sorted(set(c)), ".csv"
+      # ---------- UNIÓN ----------
+      - name: Ejecutar unión 04_eventosproxUnion.py
+        run: |
+          set -euo pipefail
+          mkdir -p output
+          python "./04_eventosproxUnion.py" "./artifacts03" "./artifacts01" "./output/participants_completos_final.json"
 
-    return [], None
+      - name: Verificar resultado y hash local
+        run: |
+          set -euo pipefail
+          ls -lh ./output
+          test -f ./output/participants_completos_final.json
+          sha256sum ./output/participants_completos_final.json | awk '{print $1}' > local.sha256
+          echo "Hash local: $(cat local.sha256)"
 
-def load_participants(root_or_file):
-    paths, kind = find_participants_sources(root_or_file)
-    if not paths:
-        raise FileNotFoundError(
-            f"No se encontraron participantes en '{root_or_file}'. "
-            "Se busca: participantes.json / participantes_*.json / participantes_procesado_*.csv / 03participantes_*.csv."
-        )
-    rows=[]
-    if kind == ".json":
-        for p in paths:
-            try:
-                rows.extend(load_json_list(p))
-            except Exception as e:
-                print(f"[WARN] JSON inválido '{p}': {e}")
-    elif kind == ".csv":
-        for p in paths:
-            try:
-                rows.extend(load_csv_rows(p))
-            except Exception as e:
-                print(f"[WARN] CSV inválido '{p}': {e}")
-    else:
-        raise ValueError("Tipo de participantes desconocido.")
-    return rows, paths
+      - name: Subir artefacto final
+        uses: actions/upload-artifact@v4
+        with:
+          name: a04-participantes-final
+          path: ./output/participants_completos_final.json
+          if-no-files-found: error
+          retention-days: 14
 
-# ---------- Descubrimiento: EVENTOS (01) ----------
-def find_events_file(root_or_file):
-    if is_file(root_or_file):
-        return root_or_file if ext(root_or_file) == ".json" else None
-    if is_dir(root_or_file):
-        cands = globs_rec(root_or_file, "01events_last.json", "01events_*.json", "01events.json", "events.json")
-        return newest(cands) if cands else None
-    return None
+      # ---------- PUBLICACIÓN FTP ----------
+      - name: Publicar por FTP (Workflows/04 y ListadoParticipantes)
+        env:
+          FTP_SERVER:     ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
+          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
+        run: |
+          set -euo pipefail
+          FILE="./output/participants_completos_final.json"
+          [ -f "$FILE" ] || { echo "::error::No existe $FILE"; exit 1; }
+          TS="$(date -u +'%Y%m%dT%H%M%SZ')"
+          WF_DIR="${FTP_REMOTE_DIR}/Competiciones/ListadoEventos/Workflows/04"
+          PUB_DIR="${FTP_REMOTE_DIR}/Competiciones/ListadoParticipantes"
 
-def load_events(root_or_file):
-    f = find_events_file(root_or_file)
-    if not f:
-        raise FileNotFoundError(
-            f"No se encontró JSON de eventos 01 en '{root_or_file}'. "
-            "Se busca 01events_last.json / 01events_*.json."
-        )
-    data = load_json_list(f)
-    return data, f
+          echo "Subiendo a Workflows/04 y a ListadoParticipantes..."
+          lftp -u "${FTP_USERNAME}","${FTP_PASSWORD}" "${FTP_SERVER}" -e "\
+            set net:timeout 20; set net:max-retries 3; set net:persist-retry 2; \
+            set ftp:passive-mode true; set ftp:ssl-force true; set ftp:ssl-protect-data true; set ssl:verify-certificate no; \
+            mkdir -p \"${WF_DIR}\"; mkdir -p \"${PUB_DIR}\"; \
+            put -O \"${WF_DIR}\" \"${FILE}\" -o participants_completos_final_${TS}.json; \
+            put -O \"${WF_DIR}\" \"${FILE}\" -o participants_completos_final_last.json; \
+            put -O \"${PUB_DIR}\" \"${FILE}\" -o participants_completos_final_${TS}.json; \
+            put -O \"${PUB_DIR}\" \"${FILE}\" -o participants_completos_final.json; \
+            bye"
 
-# ---------- Utilidades de unión ----------
-def norm(s):
-    return (s or "").strip()
-
-def first_nonempty(*vals):
-    for v in vals:
-        if v is None:
-            continue
-        if isinstance(v, str) and norm(v):
-            return v
-        if not isinstance(v, str):
-            return v
-    return None
-
-def strip_suffixes(url: str) -> str:
-    """Quita sufijos /info, /participants_list, /runs."""
-    u = norm(url)
-    if not u:
-        return u
-    u = re.sub(r"/(info|participants_list|runs)(/.*)?$", "", u.rstrip("/"), flags=re.I)
-    return u
-
-def build_event_indexes(events):
-    by_url = {}
-    by_uuid = {}
-    for e in events:
-        # URL preferida
-        url = e.get("event_url") or (e.get("enlaces", {}) or {}).get("info")
-        if url:
-            base = strip_suffixes(url)
-            by_url[norm(url)] = e
-            by_url[base] = e
-        # uuid
-        uid = e.get("uuid") or e.get("id")
-        if uid:
-            by_uuid[norm(uid)] = e
-    return by_url, by_uuid
-
-def derive_event_url_from_participants(row):
-    # 1) ya viene
-    if norm(row.get("event_url")):
-        return strip_suffixes(row["event_url"])
-    # 2) desde participants_url
-    pu = norm(row.get("participants_url"))
-    if pu:
-        return strip_suffixes(pu)
-    # 3) desde event_title / nada (no fiable) -> None
-    return None
-
-def merge_row_with_event(row, ev):
-    """Rellena campos finales desde evento 01 sin pisar valores válidos de participantes."""
-    out = dict(row)
-
-    # event_url
-    if not norm(out.get("event_url")):
-        out["event_url"] = first_nonempty(
-            ev.get("event_url"),
-            (ev.get("enlaces", {}) or {}).get("info"),
-        ) or ""
-
-    # PruebaNom
-    if not norm(out.get("PruebaNom")) or out.get("PruebaNom") == "N/D":
-        out["PruebaNom"] = first_nonempty(
-            row.get("title"),
-            row.get("event_title"),
-            ev.get("nombre"),
-        ) or "N/D"
-
-    # Organiza
-    if not norm(out.get("Organiza")) or out.get("Organiza") == "N/D":
-        out["Organiza"] = first_nonempty(
-            row.get("organizer"),
-            ev.get("organizacion"),
-            ev.get("club"),
-        ) or "N/D"
-
-    # Lugar
-    if not norm(out.get("Lugar")) or out.get("Lugar") == "N/D":
-        out["Lugar"] = first_nonempty(
-            row.get("location"),
-            ev.get("lugar"),
-        ) or "N/D"
-
-    # Fechas
-    if not norm(out.get("Fechas")) or out.get("Fechas") == "N/D":
-        out["Fechas"] = first_nonempty(
-            row.get("dates"),
-            ev.get("fechas"),
-        ) or "N/D"
-
-    return out
-
-def dedupe(records):
-    seen=set(); out=[]
-    def key(r):
-        for ks in [("event_url","BinomID"),
-                   ("participants_url","BinomID"),
-                   ("event_url","Dorsal"),
-                   ("PruebaNom","Guia","Perro"),
-                   ("event_title","Guía","Perro")]:
-            if all(k in r and norm(r.get(k)) for k in ks):
-                return "K::" + "||".join(str(r[k]) for k in ks)
-        return "RAW::" + json.dumps(r, ensure_ascii=False, sort_keys=True)
-    for r in records:
-        k = key(r)
-        if k in seen:
-            continue
-        seen.add(k); out.append(r)
-    return out
-
-# --------------------- MAIN ----------------------------
-def main():
-    # Cargar datasets
-    parts, parts_paths = load_participants(PARTS_IN)
-    events, events_path = load_events(EVENTS_IN)
-
-    by_url, by_uuid = build_event_indexes(events)
-
-    merged=[]
-    not_matched=0
-
-    for r in parts:
-        # Derivar URL base del evento si no viene (desde participants_url)
-        eu = derive_event_url_from_participants(r)
-        if eu:
-            r.setdefault("event_url", eu)
-
-        # Intentar casar con 01:
-        ev = None
-        if eu and eu in by_url:
-            ev = by_url[eu]
-        else:
-            uid = norm(r.get("event_uuid") or r.get("uuid"))
-            if uid and uid in by_uuid:
-                ev = by_uuid[uid]
-            elif eu:
-                # Asegurar quitar sufijos
-                base = strip_suffixes(eu)
-                ev = by_url.get(base)
-
-        if ev:
-            merged.append(merge_row_with_event(r, ev))
-        else:
-            not_matched += 1
-            merged.append(r)  # conservamos aunque no podamos enriquecer
-
-    before = len(merged)
-    merged = dedupe(merged)
-    after  = len(merged)
-
-    os.makedirs(os.path.dirname(FINAL_OUT) or ".", exist_ok=True)
-    with open(FINAL_OUT, "w", encoding="utf-8") as f:
-        json.dump(merged, f, ensure_ascii=False, indent=2)
-
-    meta = {
-        "_generated_at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "_participants_sources": [os.path.relpath(p, start=".") for p in parts_paths],
-        "_events_source": os.path.relpath(events_path, start="."),
-        "_count_before_dedup": before,
-        "_count": after,
-        "_not_matched": not_matched,
-        "_output": os.path.relpath(FINAL_OUT, start="."),
-    }
-    print(f"✅ Unión completada -> {FINAL_OUT}")
-    print(json.dumps(meta, ensure_ascii=False, indent=2))
-
-if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        print(f"❌ {e}")
-        sys.exit(1)
+      - name: Verificar remoto (descarga y compara hash de ListadoParticipantes)
+        env:
+          FTP_SERVER:     ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
+          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
+        run: |
+          set -euo pipefail
+          PUB_DIR="${FTP_REMOTE_DIR}/Competiciones/ListadoParticipantes"
+          lftp -u "${FTP_USERNAME}","${FTP_PASSWORD}" "${FTP_SERVER}" -e "\
+            set net:timeout 20; set net:max-retries 3; set net:persist-retry 2; \
+            set ftp:passive-mode true; set ftp:ssl-force true; set ftp:ssl-protect-data true; set ssl:verify-certificate no; \
+            get -O . \"${PUB_DIR}/participants_completos_final.json\" -o remote_final.json; bye"
+          sha256sum remote_final.json | awk '{print $1}' > remote.sha256
+          echo "Hash remoto: $(cat remote.sha256)"
+          diff -q local.sha256 remote.sha256 && echo "OK: hash coincide"
