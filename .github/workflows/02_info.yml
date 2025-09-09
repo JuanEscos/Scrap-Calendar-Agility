@@ -134,6 +134,7 @@ jobs:
           echo "Destino FTPS: ftp://${FTP_SERVER}${DEST_DIR}"
           sha256sum "$SRC" | awk '{print $1}' > local.sha256
 
+          # Sin mkdir: algunos servidores devuelven 550 aunque exista. Solo cd + put.
           lftp -u "${FTP_USERNAME}","${FTP_PASSWORD}" "ftp://${FTP_SERVER}" -e "\
             set cmd:fail-exit yes; \
             set net:timeout 25; \
@@ -144,9 +145,10 @@ jobs:
             set ftp:ssl-force yes; \
             set ftp:ssl-protect-data yes; \
             set ssl:verify-certificate no; \
-            mkdir -p ${DEST_DIR}; cd ${DEST_DIR}; \
-            put -O . ${SRC} -o 02info_last.json; \
-            put -O . ${SRC} -o 02info_${TS}.json; \
+            cd ${DEST_DIR}; \
+            pwd; cls -l; \
+            put ${SRC} -o 02info_last.json; \
+            put ${SRC} -o 02info_${TS}.json; \
             cls -l; \
             bye"
 
