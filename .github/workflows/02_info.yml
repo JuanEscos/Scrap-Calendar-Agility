@@ -26,7 +26,7 @@ jobs:
       FLOW_EMAIL:        ${{ secrets.FLOW_EMAIL }}
       FLOW_PASS:         ${{ secrets.FLOW_PASS }}
       FLOW_USER_EMAIL:   ${{ secrets.FLOW_EMAIL }}
-      FLOW_USER_PASSWORD:${{ secrets.FLOW_PASS }}
+      FLOW_USER_PASSWORD: ${{ secrets.FLOW_PASS }}
 
     steps:
       - uses: actions/checkout@v4
