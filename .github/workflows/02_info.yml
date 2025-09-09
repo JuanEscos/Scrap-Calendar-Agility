@@ -21,7 +21,7 @@ jobs:
     env:
       TZ: Europe/Madrid
       HEADLESS: "true"
-      # El script admite ambas variantes:
+      # Vars para tu script Python (acepta ambos nombres)
       FLOW_EMAIL: ${{ secrets.FLOW_EMAIL }}
       FLOW_PASS:  ${{ secrets.FLOW_PASS }}
       FLOW_USER_EMAIL: ${{ secrets.FLOW_EMAIL }}
@@ -46,7 +46,7 @@ jobs:
       - name: Setup Chrome (Selenium)
         uses: browser-actions/setup-chrome@v1
 
-      # ========= Descarga artefacto del 01 =========
+      # ====== Descargar artefacto 01 ======
       - name: Descargar artefacto 01 (encadenado)
         if: ${{ github.event_name == 'workflow_run' }}
         uses: actions/download-artifact@v4
@@ -69,8 +69,8 @@ jobs:
             const wf = wfList.workflows.find(w => w.name === WORKFLOW_NAME);
             if (!wf) { core.setFailed(`No se encontró workflow "${WORKFLOW_NAME}"`); return; }
             const { data: runs } = await github.rest.actions.listWorkflowRuns({
-              owner: context.repo.owner, repo: context.repo.repo, workflow_id: wf.id,
-              status: 'success', per_page: 1
+              owner: context.repo.owner, repo: context.repo.repo,
+              workflow_id: wf.id, status: 'success', per_page: 1
             });
             if (!runs.workflow_runs.length) { core.setFailed(`No hay runs success de "${WORKFLOW_NAME}"`); return; }
             core.setOutput('run_id',  runs.workflow_runs[0].id);
@@ -103,7 +103,6 @@ jobs:
           python "./02_eventosproxINFO.py" "./output/01events_last.json" "./output/02competiciones_detalladas.json"
           ls -lh ./output
           test -f ./output/02competiciones_detalladas.json
-          # Copia canónica extra, por si la usas en otros pasos:
           cp -f ./output/02competiciones_detalladas.json ./output/02info_last.json
 
       - name: Subir artefacto 02info
@@ -116,11 +115,11 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      # ========= Publicación por FTPS con lftp + verificación =========
+      # ====== FTPS con lftp (sin net:persist-retry) ======
       - name: Instalar lftp
         run: sudo apt-get update && sudo apt-get install -y lftp
 
-      - name: Subir por FTPS (02info_last.json + copia con timestamp) y verificar
+      - name: Subir por FTPS (02info_last.json + timestamp) y verificar
         env:
           FTP_SERVER:     ${{ secrets.FTP_SERVER }}
           FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
@@ -136,19 +135,25 @@ jobs:
           echo "Destino FTPS: ftp://${FTP_SERVER}${DEST_DIR}"
           sha256sum "$SRC" | awk '{print $1}' > local.sha256
 
-          # Subida robusta con lftp (fail-exit + TLS)
           lftp -u "${FTP_USERNAME}","${FTP_PASSWORD}" "ftp://${FTP_SERVER}" -e "\
             set cmd:fail-exit yes; \
-            set net:timeout 25; set net:max-retries 3; set net:persist-retry 2; \
-            set ftp:ssl-auth TLS; set ftp:ssl-force true; set ftp:ssl-protect-data true; \
-            set ftp:passive-mode true; set ssl:verify-certificate no; \
+            set net:timeout 25; \
+            set net:max-retries 2; \
+            set net:reconnect-interval-base 5; \
+            set net:reconnect-interval-max 20; \
+            set ftp:passive-mode true; \
+            set ftp:use-epsv false; \
+            set ftp:ssl-auth TLS; \
+            set ftp:ssl-force true; \
+            set ftp:ssl-protect-data true; \
+            set ssl:verify-certificate no; \
             mkdir -p ${DEST_DIR}; cd ${DEST_DIR}; \
             put -O . ${SRC} -o 02info_last.json; \
             put -O . ${SRC} -o 02info_${TS}.json; \
             cls -l; \
             bye"
 
-          # Verificación descargando el 'last'
+          # Verificación por descarga y hash
           curl --fail --ssl-reqd --disable-epsv --ftp-skip-pasv-ip \
                --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
                --output remote_02info_last.json "ftp://${FTP_SERVER}${DEST_DIR}/02info_last.json"
