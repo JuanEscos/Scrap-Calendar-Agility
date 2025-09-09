@@ -1,18 +1,57 @@
-name: Eventos03 RSCE Participantes diario
+name: 03 - Participantes (scrape + process)
 
 on:
-  schedule:
-    - cron: '3 4 * * *'   # 02:05 UTC
+  # Se dispara automáticamente cuando ACABA el 02
+  workflow_run:
+    workflows: ["02 - INFO desde 01events"]  # Debe coincidir EXACTO con el name: del 02
+    types: [completed]
+
+  # Permite lanzarlo a mano desde la UI
   workflow_dispatch: {}
+
+  # (Opcional) Ejecutarlo cada día
+  schedule:
+    - cron: '3 4 * * *'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: participantes-03
+  cancel-in-progress: true
 
 jobs:
   run_and_upload:
+    # Permite ejecución manual SIEMPRE; en modo encadenado solo si el 02 terminó OK
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.name == '02 - INFO desde 01events') }}
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+
     env:
       TZ: Europe/Madrid
+      OUT_DIR: ./output
+      # El script 03 usa FLOW_EMAIL/FLOW_PASS (no FLOW_USER_*)
+      FLOW_EMAIL: ${{ secrets.FLOW_EMAIL }}
+      FLOW_PASS:  ${{ secrets.FLOW_PASS }}
+      HEADLESS: "true"
+      INCOGNITO: "true"
+      FILE_PREFIX: "03"
+      LIMIT_EVENTS: "0"
+      LIMIT_PARTICIPANTS: "0"
 
     steps:
       - uses: actions/checkout@v4
+
+      # DEBUG del disparador (muy útil para ver por qué no se lanza)
+      - name: Debug event context
+        run: |
+          echo "Event name: ${{ github.event_name }}"
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            echo "Triggered by run id: ${{ github.event.workflow_run.id }}"
+            echo "Triggered by workflow name: ${{ github.event.workflow_run.name }}"
+            echo "Run conclusion: ${{ github.event.workflow_run.conclusion }}"
+          fi
 
       - uses: actions/setup-python@v5
         with:
@@ -20,76 +59,112 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.txt
 
-      - name: Instalar dependencias (si existe requirements.txt)
+      - name: Instalar dependencias
         run: |
           set -euo pipefail
-          python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-
-      - name: Ejecutar script que genera el JSON
-        run: |
-          set -euo pipefail
-          python "./03_eventosproxParticipantes.py"   # <-- ajusta el nombre si tu script es distinto
-
-      - name: Localizar JSON y calcular hash
-        id: out
-        run: |
-          set -euo pipefail
-          FILE_PATH="$(find . -type f -name 'participantes_completos_final.json' -print -quit)"
-          if [ -z "$FILE_PATH" ]; then
-            echo "::error::No se encontró participantes_completos_final.json"; exit 1
+          python -m pip install --upgrade pip setuptools wheel
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            pip install selenium webdriver-manager beautifulsoup4 python-dotenv pandas python-dateutil numpy
           fi
-          echo "file_path=$FILE_PATH" >> "$GITHUB_OUTPUT"
-          sha256sum "$FILE_PATH" | awk '{print $1}' > local.sha256
-          echo "local_hash=$(cut -d' ' -f1 local.sha256)" >> "$GITHUB_OUTPUT"
 
-      - name: Listar carpeta remota (antes de subir)
-        env:
-          FTP_SERVER:     ${{ secrets.FTP_SERVER }}
-          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
-          FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
-          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}   # ej: /www/NewWeb/Privado
+      - name: Instalar Google Chrome
+        uses: browser-actions/setup-chrome@v1
+
+      - name: Ejecutar 03 (all: scrape + process) con timeout duro
+        shell: bash
         run: |
           set -euo pipefail
-          BASE="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/Competiciones/ListadoEventos"
-          echo "Listando: ${BASE}/"
-          curl --fail --ssl-reqd --user "${FTP_USERNAME}:${FTP_PASSWORD}" "${BASE}/" -l || true
+          mkdir -p "$OUT_DIR"
+          SCRIPT="./03_eventosproxParticipantes.py"
+          if [ ! -f "$SCRIPT" ]; then
+            echo "::error::No se encontró $SCRIPT"; exit 1
+          fi
 
-      - name: Subir JSON por FTPS (TLS explicito en 21)
+          # Timeout duro para evitar que se quede colgado (mata Chrome si expira)
+          if ! timeout 45m python "$SCRIPT" all; then
+            echo "::error::03_eventosproxParticipantes.py superó el tiempo"
+            pkill -9 -f chrome || true
+            pkill -9 -f chromedriver || true
+            exit 1
+          fi
+
+      - name: Listado de outputs
+        run: |
+          echo "Contenido de $OUT_DIR:"
+          ls -la "$OUT_DIR" || true
+          echo "Coincidencias previstas:"
+          ls -1 ./output/*events_*.csv 2>/dev/null || true
+          ls -1 ./output/*participantes_*.csv 2>/dev/null || true
+          ls -1 ./output/participantes.json 2>/dev/null || true
+          ls -1 ./output/participantes_*.json 2>/dev/null || true
+          ls -1 ./output/participantes_procesado_*.csv 2>/dev/null || true
+          ls -1 ./output/*progress_*.json 2>/dev/null || true
+
+      - name: Assert outputs exist
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=( ./output/*events_*.csv ./output/*participantes_*.csv ./output/participantes.json ./output/participantes_*.json ./output/participantes_procesado_*.csv )
+          echo "Ficheros a subir: ${files[*]:-<ninguno>}"
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::error::No hay ficheros de salida para subir (revisa nombres y OUT_DIR)"; exit 1
+          fi
+
+      - name: Upload processed participants (JSON+CSV)
+        uses: actions/upload-artifact@v4
+        with:
+          name: a03-participants-processed
+          path: |
+            ./output/*events_*.csv
+            ./output/*participantes_*.csv
+            ./output/participantes.json
+            ./output/participantes_*.json
+            ./output/participantes_procesado_*.csv
+            ./output/*progress_*.json
+          if-no-files-found: error
+          retention-days: 5
+
+      # ====== (Opcional) FTPS a carpeta de Workflows/03, igual que el 01 ======
+      - name: Install lftp
+        run: sudo apt-get update && sudo apt-get install -y lftp
+
+      - name: (FTPS) Upload últimos JSON/CSV de 03 + verificación rápida
         env:
           FTP_SERVER:     ${{ secrets.FTP_SERVER }}
           FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
           FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
           FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
+        shell: bash
         run: |
           set -euo pipefail
-          FILE="${{ steps.out.outputs.file_path }}"
-          if [ ! -f "$FILE" ]; then
-            echo "::error::El fichero local no existe: $FILE"; exit 1
-          fi
-          BASE="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/Competiciones/ListadoEventos"
-          echo "Subiendo: $FILE -> ${BASE}/participantes_completos_final.json"
-          curl --fail --ssl-reqd --ftp-create-dirs --disable-epsv --ftp-skip-pasv-ip \
-               --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
-               --upload-file "$FILE" \
-               "${BASE}/participantes_completos_final.json"
+          DEST_DIR="$(printf "%s/Competiciones/ListadoEventos/Workflows/03" "${FTP_REMOTE_DIR%/}")"
+          echo "DEST_DIR calculado: $DEST_DIR"
 
-      - name: Verificar remoto (descargar y comparar hash)
-        env:
-          FTP_SERVER:     ${{ secrets.FTP_SERVER }}
-          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
-          FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
-          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
-        run: |
-          set -euo pipefail
-          BASE="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/Competiciones/ListadoEventos"
-          echo "Descargando: ${BASE}/participantes_completos_final.json"
-          curl --fail --ssl-reqd --disable-epsv --ftp-skip-pasv-ip \
-               --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
-               --output remote.json "${BASE}/participantes_completos_final.json"
+          # El archivo canónico de salida del 03 (JSON consolidado del paso process)
+          # se llama ./output/participantes.json (además del versionado por fecha).
+          test -f ./output/participantes.json || { echo "::warning::No existe ./output/participantes.json; subo lo disponible"; }
 
-          sha256sum remote.json | awk '{print $1}' > remote.sha256
-          echo "Hash local : ${{ steps.out.outputs.local_hash }}"
-          echo "Hash remoto: $(cut -d' ' -f1 remote.sha256)"
-          diff -q local.sha256 remote.sha256
-          echo "OK: hash coincide"
+          lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" -e " \
+            set cmd:fail-exit true; \
+            set net:timeout 25; \
+            set net:max-retries 1; \
+            set net:persist-retries 0; \
+            set ftp:ssl-force true; \
+            set ftp:ssl-protect-data true; \
+            set ftp:passive-mode true; \
+            set ftp:prefer-epsv false; \
+            set ssl:verify-certificate no; \
+            cd '${FTP_REMOTE_DIR}' || cd '/${FTP_REMOTE_DIR}'; \
+            mkdir -f Competiciones; cd Competiciones; \
+            mkdir -f ListadoEventos; cd ListadoEventos; \
+            mkdir -f Workflows; cd Workflows; \
+            mkdir -f 03; cd 03; \
+            # Sube si existen (ignora faltantes):
+            mirror -Rnv --ignore-time --include-glob '*events_*.csv' ./output . || true; \
+            mirror -Rnv --ignore-time --include-glob '*participantes_*.csv' ./output . || true; \
+            mirror -Rnv --ignore-time --include-glob 'participantes*.json' ./output . || true; \
+            mirror -Rnv --ignore-time --include-glob 'participantes_procesado_*.csv' ./output . || true; \
+            echo 'Contenido en destino 03:'; pwd; cls -l; \
+            bye"
