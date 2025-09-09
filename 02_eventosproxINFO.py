@@ -23,7 +23,6 @@ import sys
 import json
 import time
 from urllib.parse import urljoin
-
 from bs4 import BeautifulSoup
 
 # ========================= Config =========================
@@ -80,6 +79,7 @@ def _import_selenium():
 
 def _get_driver(headless=True):
     (webdriver, By, Options, *_rest) = _import_selenium()
+    from selenium.webdriver.chrome.service import Service
     opts = Options()
     if headless:
         opts.add_argument("--headless=new")
@@ -89,11 +89,9 @@ def _get_driver(headless=True):
     opts.add_argument("--disable-blink-features=AutomationControlled")
     opts.add_argument("--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123 Safari/537.36")
 
-    # Si en tu runner ya instalas Chrome, normalmente no necesitas webdriver_manager.
-    # Pero lo dejamos por si ejecutas fuera de GH Actions.
     try:
         from webdriver_manager.chrome import ChromeDriverManager
-        service = _rest[-1](ChromeDriverManager().install())
+        service = Service(ChromeDriverManager().install())
         return webdriver.Chrome(service=service, options=opts)
     except Exception:
         return webdriver.Chrome(options=opts)
@@ -126,6 +124,7 @@ def _login(driver, By, WebDriverWait, EC):
     log("Login…")
     driver.get(f"{BASE}/user/login")
     wait = WebDriverWait(driver, 25)
+    # <-- FIX: sin paréntesis extra
     email = wait.until(EC.presence_of_element_located((By.NAME, "user[email]")))
     pwd   = driver.find_element(By.NAME, "user[password]")
     email.clear(); email.send_keys(FLOW_EMAIL); slow_pause(0.2, 0.6)
@@ -140,7 +139,6 @@ def _extract_info_from_info_page(driver, info_url):
     Extrae información útil de la página /info de un evento.
     Devuelve un dict con secciones 'informacion_general', 'inscripcion', 'pruebas', 'contacto', 'enlaces_adicionales'.
     """
-    from bs4 import BeautifulSoup
     data = {
         "informacion_general": {},
         "inscripcion": {},
@@ -159,12 +157,10 @@ def _extract_info_from_info_page(driver, info_url):
         return (el.get_text(separator=" ", strip=True) or "").strip()
 
     # ------ Información general ------
-    # Título
     title = soup.find(["h1","h2"], string=True) or soup.find("h1")
     if title:
         data["informacion_general"]["titulo"] = txt(title)
 
-    # Fechas / ubicación (heurísticas)
     blocks = soup.find_all(["div","span","p"])
     for b in blocks:
         s = txt(b)
@@ -261,7 +257,6 @@ def main():
         print(f"OK -> {OUT_PATH} y {OUT_PATH_LAST}")
         return
 
-    # Selenium
     (webdriver, By, Options, WebDriverWait, EC,
      TimeoutException, NoSuchElementException, WebDriverException,
      StaleElementReferenceException, JavascriptException, ElementClickInterceptedException, Service) = _import_selenium()
@@ -272,7 +267,6 @@ def main():
         slow_pause(0.5, 1.0)
 
         detailed = []
-        # Límite opcional para acelerar (debug)
         iterable = base_events[:LIMIT_INFO] if (LIMIT_INFO and LIMIT_INFO > 0) else base_events
 
         for i, ev in enumerate(iterable, 1):
@@ -281,11 +275,10 @@ def main():
             info_url = enlaces.get("info") or ""
             log(f"[{i}/{len(iterable)}] {nombre}")
 
-            merged = dict(ev)  # base + detalle
+            merged = dict(ev)
             try:
                 if info_url:
                     data = _extract_info_from_info_page(driver, info_url)
-                    # inserta bajo claves estables
                     merged["informacion_general"] = data.get("informacion_general", {})
                     merged["inscripcion"] = data.get("inscripcion", {})
                     merged["pruebas"] = data.get("pruebas", [])
@@ -300,11 +293,9 @@ def main():
             detailed.append(merged)
             slow_pause(0.8, 1.6)
 
-        # Si LIMIT_INFO < total, añade el resto de eventos tal cual para no perderlos
         if LIMIT_INFO and LIMIT_INFO > 0 and len(base_events) > len(iterable):
             detailed.extend(base_events[len(iterable):])
 
-        # Guardar salidas
         with open(OUT_PATH, "w", encoding="utf-8") as f:
             json.dump(detailed, f, ensure_ascii=False, indent=2)
         with open(OUT_PATH_LAST, "w", encoding="utf-8") as f:
@@ -313,7 +304,6 @@ def main():
         log(f"✅ Guardado: {OUT_PATH}")
         log(f"✅ Guardado: {OUT_PATH_LAST}")
 
-        # Resumen
         comp_con_info = sum(1 for c in detailed if c.get("informacion_general"))
         comp_con_precios = sum(1 for c in detailed if c.get("inscripcion", {}).get("precios"))
         comp_con_pruebas = sum(1 for c in detailed if c.get("pruebas"))
