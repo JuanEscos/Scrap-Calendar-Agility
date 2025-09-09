@@ -22,7 +22,7 @@ jobs:
     env:
       TZ: Europe/Madrid
       HEADLESS: "true"
-      # El script acepta cualquiera de estos nombres
+      # El script acepta cualquiera de estos nombres:
       FLOW_EMAIL:        ${{ secrets.FLOW_EMAIL }}
       FLOW_PASS:         ${{ secrets.FLOW_PASS }}
       FLOW_USER_EMAIL:   ${{ secrets.FLOW_EMAIL }}
@@ -68,11 +68,11 @@ jobs:
             const WORKFLOW_NAME = "01 - Eventos Prox (JSON base)";
             const { data: wfList } = await github.rest.actions.listRepoWorkflows({ owner: context.repo.owner, repo: context.repo.repo });
             const wf = wfList.workflows.find(w => w.name === WORKFLOW_NAME);
-            if (!wf) core.setFailed(`No workflow named "${WORKFLOW_NAME}"`);
+            if (!wf) { core.setFailed(`No workflow named "${WORKFLOW_NAME}"`); return; }
             const { data: runs } = await github.rest.actions.listWorkflowRuns({
               owner: context.repo.owner, repo: context.repo.repo, workflow_id: wf.id, status: 'success', per_page: 1
             });
-            if (!runs.workflow_runs.length) core.setFailed(`No successful runs for "${WORKFLOW_NAME}"`);
+            if (!runs.workflow_runs.length) { core.setFailed(`No successful runs for "${WORKFLOW_NAME}"`); return; }
             core.setOutput('run_id', runs.workflow_runs[0].id);
             core.setOutput('run_url', runs.workflow_runs[0].html_url);
 
@@ -101,7 +101,7 @@ jobs:
         run: |
           set -euo pipefail
           python "./02_eventosproxINFO.py" "./output/01events_last.json" "./output/02competiciones_detalladas.json"
-          # Copia canónica que usaremos para FTP
+          # Copia canónica para FTP
           cp -f ./output/02competiciones_detalladas.json ./output/02info_last.json
           ls -lh ./output
           test -f ./output/02info_last.json
@@ -114,7 +114,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      # ========== FTPS ========== (mismo patrón que 01)
+      # ========== FTPS (igual patrón que 01) ==========
       - name: Install lftp
         run: |
           sudo apt-get update
@@ -171,7 +171,5 @@ jobs:
             cd '${DEST_DIR}' || cd '/${DEST_DIR}'; \
             get -O '${PWD}/dl' '02info_last.json'; \
             bye"
-
-          test -f dl/02info_last.json || { echo "::error::No remote 02info_last.json"; exit 1; }
           sha256sum dl/02info_last.json | awk '{print $1}' > remote.sha256
           diff -q local.sha256 remote.sha256
