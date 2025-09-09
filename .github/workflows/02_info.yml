@@ -21,7 +21,6 @@ jobs:
     env:
       TZ: Europe/Madrid
       HEADLESS: "true"
-      # Vars para tu script Python (acepta ambos nombres)
       FLOW_EMAIL: ${{ secrets.FLOW_EMAIL }}
       FLOW_PASS:  ${{ secrets.FLOW_PASS }}
       FLOW_USER_EMAIL: ${{ secrets.FLOW_EMAIL }}
@@ -46,7 +45,7 @@ jobs:
       - name: Setup Chrome (Selenium)
         uses: browser-actions/setup-chrome@v1
 
-      # ====== Descargar artefacto 01 ======
+      # ===== Descargar artefacto 01 =====
       - name: Descargar artefacto 01 (encadenado)
         if: ${{ github.event_name == 'workflow_run' }}
         uses: actions/download-artifact@v4
@@ -115,7 +114,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      # ====== FTPS con lftp (sin net:persist-retry) ======
+      # ===== FTPS con lftp (opciones compatibles) =====
       - name: Instalar lftp
         run: sudo apt-get update && sudo apt-get install -y lftp
 
@@ -139,13 +138,11 @@ jobs:
             set cmd:fail-exit yes; \
             set net:timeout 25; \
             set net:max-retries 2; \
-            set net:reconnect-interval-base 5; \
-            set net:reconnect-interval-max 20; \
-            set ftp:passive-mode true; \
-            set ftp:use-epsv false; \
+            set ftp:passive-mode yes; \
+            set ftp:prefer-epsv no; \
             set ftp:ssl-auth TLS; \
-            set ftp:ssl-force true; \
-            set ftp:ssl-protect-data true; \
+            set ftp:ssl-force yes; \
+            set ftp:ssl-protect-data yes; \
             set ssl:verify-certificate no; \
             mkdir -p ${DEST_DIR}; cd ${DEST_DIR}; \
             put -O . ${SRC} -o 02info_last.json; \
