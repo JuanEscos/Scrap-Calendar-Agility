@@ -2,11 +2,22 @@ name: "03 - Participantes (scrape + process)"
 
 on:
   workflow_run:
-    workflows: ["02 - INFO desde 01events"]  # Debe coincidir EXACTO con el name del 02
+    workflows: ["02 - INFO desde 01events"]
     types: [completed]
-  workflow_dispatch: {}
-  schedule:
-    - cron: "3 4 * * *"
+  workflow_dispatch:
+    inputs:
+      LIMIT_EVENTS:
+        description: "Máx. eventos a scrapear (0 = sin límite)"
+        required: false
+        default: "0"
+      LIMIT_PARTICIPANTS:
+        description: "Máx. participantes por evento (0 = sin límite)"
+        required: false
+        default: "0"
+      MAX_EVENT_SECONDS:
+        description: "Tiempo máx por evento (seg)"
+        required: false
+        default: "900"
 
 permissions:
   contents: read
@@ -20,7 +31,7 @@ jobs:
   run_and_upload:
     if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.name == '02 - INFO desde 01events') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
 
     env:
       TZ: Europe/Madrid
@@ -30,20 +41,32 @@ jobs:
       HEADLESS: "true"
       INCOGNITO: "true"
       FILE_PREFIX: "03"
-      LIMIT_EVENTS: "0"
-      LIMIT_PARTICIPANTS: "0"
+      # Por defecto sin límite (0). Si lo lanzas a mano puedes ajustar en inputs.
+      LIMIT_EVENTS: ${{ inputs.LIMIT_EVENTS || '0' }}
+      LIMIT_PARTICIPANTS: ${{ inputs.LIMIT_PARTICIPANTS || '0' }}
+      # Limita cuánto tiempo puede tragarse cada evento antes de pasar al siguiente.
+      MAX_EVENT_SECONDS: ${{ inputs.MAX_EVENT_SECONDS || '600' }} # corta un evento muy lento
+      # Ralentiza un poco pero más estable en CI
+      # Ritmos
+      SLOW_MIN_S=1.2
+      SLOW_MAX_S=3.0
+      SCROLL_WAIT_S=2.5
+      MAX_SCROLLS=10
+      PER_PART_TIMEOUT_S=8
+      RENDER_POLL_S=0.35
+      CLICK_RETRIES=2
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: "Debug event context"
+      - name: "Debug trigger"
         run: |
-          echo "Event name: ${{ github.event_name }}"
+          echo "event_name=${{ github.event_name }}"
           if [ "${{ github.event_name }}" = "workflow_run" ]; then
-            echo "Triggered by run id: ${{ github.event.workflow_run.id }}"
-            echo "Triggered by workflow name: ${{ github.event.workflow_run.name }}"
-            echo "Run conclusion: ${{ github.event.workflow_run.conclusion }}"
+            echo "prev workflow: ${{ github.event.workflow_run.name }}"
+            echo "prev conclusion: ${{ github.event.workflow_run.conclusion }}"
           fi
+          echo "LIMIT_EVENTS=${LIMIT_EVENTS} LIMIT_PARTICIPANTS=${LIMIT_PARTICIPANTS} MAX_EVENT_SECONDS=${MAX_EVENT_SECONDS}"
 
       - uses: actions/setup-python@v5
         with:
@@ -64,7 +87,8 @@ jobs:
       - name: "Instalar Google Chrome"
         uses: browser-actions/setup-chrome@v1
 
-      - name: "Ejecutar 03 (all: scrape + process) con timeout duro"
+      # --- SCRAPE (tolerante a timeout) ---
+      - name: "Scrape (máx 40 min, continúa aunque expire)"
         shell: bash
         run: |
           set -euo pipefail
@@ -73,14 +97,19 @@ jobs:
           if [ ! -f "$SCRIPT" ]; then
             echo "::error::No se encontró $SCRIPT"; exit 1
           fi
-
-          # Timeout duro para evitar cuelgues
-          if ! timeout 45m python "$SCRIPT" all; then
-            echo "::error::03_eventosproxParticipantes.py superó el tiempo"
+          # Si excede, seguimos igualmente a process con lo que haya dejado en ./output
+          if ! timeout 40m python "$SCRIPT" scrape; then
+            echo "::warning::Scrape llegó a timeout; continuo a process con los CSV existentes."
             pkill -9 -f chrome || true
             pkill -9 -f chromedriver || true
-            exit 1
           fi
+
+      # --- PROCESS (rápido; usa el CSV más reciente) ---
+      - name: "Process (máx 10 min)"
+        shell: bash
+        run: |
+          set -euo pipefail
+          python "./03_eventosproxParticipantes.py" process
 
       - name: "Listado de outputs"
         run: |
@@ -94,14 +123,14 @@ jobs:
           ls -1 ./output/participantes_procesado_*.csv 2>/dev/null || true
           ls -1 ./output/*progress_*.json 2>/dev/null || true
 
-      - name: "Assert outputs exist"
+      - name: "Assert salida procesada"
         run: |
           set -euo pipefail
           shopt -s nullglob
-          files=( ./output/*events_*.csv ./output/*participantes_*.csv ./output/participantes.json ./output/participantes_*.json ./output/participantes_procesado_*.csv )
-          echo "Ficheros a subir: ${files[*]:-<ninguno>}"
-          if [ ${#files[@]} -eq 0 ]; then
-            echo "::error::No hay ficheros de salida para subir (revisa nombres y OUT_DIR)"; exit 1
+          processed=( ./output/participantes_procesado_*.csv ./output/participantes.json )
+          echo "Procesados: ${processed[*]:-<ninguno>}"
+          if [ ${#processed[@]} -eq 0 ]; then
+            echo "::error::No hay archivo procesado. Revisa límites/timeout."; exit 1
           fi
 
       - name: "Subir artefactos (JSON+CSV)"
@@ -118,7 +147,7 @@ jobs:
           if-no-files-found: error
           retention-days: 5
 
-      # ===== (Opcional) FTPS igual que el 01 =====
+      # (Opcional) Sube a FTP como en el 01; puedes quitar este bloque si no lo necesitas.
       - name: "Install lftp"
         run: sudo apt-get update && sudo apt-get install -y lftp
 
@@ -133,7 +162,6 @@ jobs:
           set -euo pipefail
           DEST_DIR="$(printf "%s/Competiciones/ListadoEventos/Workflows/03" "${FTP_REMOTE_DIR%/}")"
           echo "DEST_DIR calculado: $DEST_DIR"
-
           lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" -e " \
             set cmd:fail-exit true; \
             set net:timeout 25; \
