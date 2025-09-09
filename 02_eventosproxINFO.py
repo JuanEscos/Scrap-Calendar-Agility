@@ -5,7 +5,7 @@
 - Credenciales por ENV: FLOW_EMAIL, FLOW_PASS (fallback: FLOW_USER_EMAIL, FLOW_USER_PASSWORD)
 - Flags por ENV:
     HEADLESS=true|false (default: true)
-    LIMIT_INFO=0 (0 = sin límite; >0 limita eventos a procesar)
+    LIMIT_INFO=15 (0 = sin límite; >0 limita eventos a procesar)
 - Entradas/salidas:
     python 02_eventosproxINFO.py [IN_EVENTS_JSON] [OUT_DETAILED_JSON]
     * Si no se pasan argumentos, el script busca IN en:
