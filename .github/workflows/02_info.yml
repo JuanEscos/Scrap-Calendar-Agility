@@ -114,13 +114,14 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      # ========== FTPS (igual patrón que 01) ==========
+      # ===== FTPS (lftp) con timeouts y verificación, igual que el 01 =====
       - name: Install lftp
         run: |
           sudo apt-get update
           sudo apt-get install -y lftp
 
-      - name: (FTPS) Upload + verify (02)
+      # Opcional: smoke test de ruta base (ayuda a diagnosticar permisos/ruta)
+      - name: (FTPS) Smoke test base path
         env:
           FTP_SERVER:     ${{ secrets.FTP_SERVER }}
           FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
@@ -129,14 +130,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          FILE="./output/02info_last.json"
-          [ -f "$FILE" ] || { echo "::error::Missing $FILE"; exit 1; }
-          DEST_BASE="${FTP_REMOTE_DIR%/}"
-          DEST_DIR="$DEST_BASE/Competiciones/ListadoEventos/Workflows/02"
-          TS="$(date -u +'%Y%m%dT%H%M%SZ')"
-
-          sha256sum "$FILE" | awk '{print $1}' > local.sha256
-
+          echo "Probando acceso a base: ${FTP_REMOTE_DIR}"
           lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" -e " \
             set cmd:fail-exit true; \
             set net:timeout 25; \
@@ -147,16 +141,49 @@ jobs:
             set ftp:passive-mode true; \
             set ftp:prefer-epsv false; \
             set ssl:verify-certificate no; \
-            cd '${DEST_BASE}' || cd '/${DEST_BASE}'; \
+            cd '${FTP_REMOTE_DIR}' || cd '/${FTP_REMOTE_DIR}'; \
+            pwd; cls -l; \
+            bye"
+
+      - name: (FTPS) Upload + verify (máx 5 min)
+        timeout-minutes: 5
+        env:
+          FTP_SERVER:     ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
+          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          FILE="./output/02competiciones_detalladas.json"
+          [ -f "$FILE" ] || { echo "::error::Falta $FILE"; exit 1; }
+
+          DEST_DIR="$(printf "%s/Competiciones/ListadoEventos/Workflows/02" "${FTP_REMOTE_DIR%/}")"
+          TS="$(date -u +'%Y%m%dT%H%M%SZ')"
+          echo "DEST_DIR calculado: $DEST_DIR"
+
+          # Subir fijo + histórico con la misma configuración que funcionó en el 01
+          lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" -e " \
+            set cmd:fail-exit true; \
+            set net:timeout 25; \
+            set net:max-retries 1; \
+            set net:persist-retries 0; \
+            set ftp:ssl-force true; \
+            set ftp:ssl-protect-data true; \
+            set ftp:passive-mode true; \
+            set ftp:prefer-epsv false; \
+            set ssl:verify-certificate no; \
+            cd '${FTP_REMOTE_DIR}' || cd '/${FTP_REMOTE_DIR}'; \
             mkdir -f Competiciones; cd Competiciones; \
             mkdir -f ListadoEventos; cd ListadoEventos; \
             mkdir -f Workflows; cd Workflows; \
             mkdir -f 02; cd 02; \
             put -O . '${FILE}' -o '02info_last.json'; \
             put -O . '${FILE}' -o '02info_${TS}.json'; \
-            echo 'Destino:'; pwd; cls -l; \
+            echo 'Contenido en destino:'; pwd; cls -l; \
             bye"
 
+          # Descargar a ./dl y comparar hash (verificación real)
           rm -rf dl && mkdir -p dl
           lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" -e " \
             set cmd:fail-exit true; \
@@ -171,5 +198,10 @@ jobs:
             cd '${DEST_DIR}' || cd '/${DEST_DIR}'; \
             get -O '${PWD}/dl' '02info_last.json'; \
             bye"
+
+          test -f dl/02info_last.json || { echo "::error::No se descargó dl/02info_last.json"; ls -la dl; exit 1; }
+          sha256sum "./output/02competiciones_detalladas.json" | awk '{print $1}' > local.sha256
           sha256sum dl/02info_last.json | awk '{print $1}' > remote.sha256
+          echo "Local : $(cat local.sha256)"
+          echo "Remoto: $(cat remote.sha256)"
           diff -q local.sha256 remote.sha256
