@@ -179,7 +179,7 @@ def _stall_guard_factory():
 
 # ============================== Progreso (resume) ==============================
 def _load_progress():
-    if RESUME && os.path.exists(PROGRESS_PATH):
+    if RESUME and os.path.exists(PROGRESS_PATH):
         try:
             with open(PROGRESS_PATH, "r", encoding="utf-8") as f:
                 return json.load(f)
