@@ -1,0 +1,155 @@
+name: Agility - Unificado (01+02+03+04)
+
+on:
+  schedule:
+    - cron: '5 4 * * *'  # diario 04:05 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: agility-unificado
+  cancel-in-progress: true
+
+jobs:
+  run_all:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      TZ: Europe/Madrid
+      OUT_DIR: ./output
+      FLOW_EMAIL: ${{ secrets.FLOW_EMAIL }}
+      FLOW_PASS:  ${{ secrets.FLOW_PASS }}
+      HEADLESS: "true"
+      INCOGNITO: "true"
+      # Ajusta si quieres limitar:
+      LIMIT_EVENTS: "0"
+      LIMIT_PARTICIPANTS: "0"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          fi
+          pip install beautifulsoup4 lxml selenium webdriver-manager python-dateutil numpy pandas
+
+      - name: Install Google Chrome
+        uses: browser-actions/setup-chrome@v1
+
+      - name: Run unificado (máx 90 min)
+        id: run_unificado
+        timeout-minutes: 90
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$OUT_DIR"
+          python "./extraerParticipantesEventosProx.py"
+          echo "Listando $OUT_DIR"
+          ls -la "$OUT_DIR"
+
+      - name: Upload artifact (todo el output)
+        uses: actions/upload-artifact@v4
+        with:
+          name: a-unificado-output
+          path: ./output
+          if-no-files-found: error
+          retention-days: 10
+
+      - name: Install lftp
+        run: sudo apt-get update && sudo apt-get install -y lftp
+
+      - name: FTPS upload (los 4 ficheros pedidos)
+        timeout-minutes: 6
+        env:
+          FTP_SERVER:     ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
+          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEST_BASE="$(printf "%s/Competiciones/ListadoEventos/Workflows" "${FTP_REMOTE_DIR%/}")"
+          TS="$(date -u +'%Y%m%dT%H%M%SZ')"
+
+          # Buscar "el más reciente" para cada patrón requerido
+          one_or_fail() { 
+            pat="$1"
+            f=$(ls -1t ./output/$pat 2>/dev/null | head -n1 || true)
+            if [ -z "$f" ]; then
+              echo "::error::No encontrado output/$pat"; exit 1
+            fi
+            echo "$f"
+          }
+
+          F01=$(one_or_fail "01events_*.json")
+          F02=$(one_or_fail "02competiciones_detalladas_*.json")
+          F03=$(one_or_fail "participantes_procesado_*.csv")
+          F04=$(one_or_fail "participants_completos_final.json")
+
+          echo "Subiendo a ${FTP_SERVER} -> ${DEST_BASE}"
+          lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" -e " \
+            set cmd:fail-exit true; \
+            set net:timeout 25; \
+            set net:max-retries 1; \
+            set net:persist-retries 0; \
+            set ftp:ssl-force true; \
+            set ftp:ssl-protect-data true; \
+            set ftp:passive-mode true; \
+            set ftp:prefer-epsv false; \
+            set ssl:verify-certificate no; \
+            cd '${FTP_REMOTE_DIR}' || cd '/${FTP_REMOTE_DIR}'; \
+            mkdir -f Competiciones; cd Competiciones; \
+            mkdir -f ListadoEventos; cd ListadoEventos; \
+            mkdir -f Workflows; cd Workflows; \
+            put -O . '${F01}' -o '01events_last.json'; \
+            put -O . '${F01}' -o '01events_${TS}.json'; \
+            put -O . '${F02}' -o '02info_last.json'; \
+            put -O . '${F02}' -o '02info_${TS}.json'; \
+            put -O . '${F03}' -o 'participantes_procesado_${TS}.csv'; \
+            put -O . '${F04}' -o 'participants_completos_final_last.json'; \
+            put -O . '${F04}' -o 'participants_completos_final_${TS}.json'; \
+            echo 'Contenido destino:'; pwd; cls -l; \
+            bye"
+
+      - name: (Verify) descargar último final y comparar hash
+        env:
+          FTP_SERVER:     ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
+          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEST_BASE="$(printf "%s/Competiciones/ListadoEventos/Workflows" "${FTP_REMOTE_DIR%/}")"
+          test -f ./output/participants_completos_final.json
+          sha256sum ./output/participants_completos_final.json | awk '{print $1}' > local.sha256
+          lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" -e " \
+            set cmd:fail-exit true; \
+            set net:timeout 20; \
+            set net:max-retries 1; \
+            set ftp:ssl-force true; \
+            set ftp:ssl-protect-data true; \
+            set ftp:passive-mode true; \
+            set ftp:prefer-epsv false; \
+            set ssl:verify-certificate no; \
+            cd '${DEST_BASE}' || cd '/${DEST_BASE}'; \
+            get -O . 'participants_completos_final_last.json' -o remote_final.json; \
+            bye"
+          test -f remote_final.json
+          sha256sum remote_final.json | awk '{print $1}' > remote.sha256
+          echo "Local : $(cat local.sha256)"
+          echo "Remoto: $(cat remote.sha256)"
+          diff -q local.sha256 remote.sha256 && echo "OK: hash coincide"
