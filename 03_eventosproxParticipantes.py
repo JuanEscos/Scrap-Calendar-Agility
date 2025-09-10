@@ -21,7 +21,10 @@ ENV opcionales (recomendado):
   MAX_SCROLLS=24, SCROLL_WAIT_S=2.0, SLOW_MIN_S=1.0, SLOW_MAX_S=3.0, ...
   CHROME_BINARY=/ruta/google-chrome
   CHROMEDRIVER_PATH=/ruta/chromedriver
-  DEBUG_PART_HTML=true                # si quieres volcar HTML de participantes “vacíos”
+
+  # Watchdogs anti-bucle:
+  MAX_TOTAL_SECONDS=3600              # presupuesto total (segundos) para el paso "scrape"
+  EVENT_STALL_SECONDS=180             # si no avanza el índice de participante en este tiempo, saltar evento
 
 Requisitos:
   pip install selenium python-dotenv pandas python-dateutil numpy
@@ -81,14 +84,17 @@ OUT_DIR            = os.path.abspath(os.getenv("OUT_DIR", "./output"))
 RESUME             = _env_bool("RESUME", True)
 SLOW_MIN_S         = _env_float("SLOW_MIN_S", 1.0)
 SLOW_MAX_S         = _env_float("SLOW_MAX_S", 3.0)
-DEBUG_PART_HTML    = _env_bool("DEBUG_PART_HTML", False)
+
+# Watchdogs anti-bucle (NUEVOS)
+MAX_TOTAL_SECONDS   = _env_int("MAX_TOTAL_SECONDS", 3600)     # presupuesto total para scraping
+EVENT_STALL_SECONDS = _env_int("EVENT_STALL_SECONDS", 180)    # estancamiento por evento
 
 # Límites
 LIMIT_EVENTS        = _env_int("LIMIT_EVENTS", 0)          # 0 = sin límite
 LIMIT_PARTICIPANTS  = _env_int("LIMIT_PARTICIPANTS", 0)    # 0 = sin límite
 UPCOMING_LIMIT      = _env_int("UPCOMING_LIMIT", 0)        # 0 = sin límite
 
-# Prefijo de ficheros del día (por defecto "03" para encajar con tus logs)
+# Prefijo de ficheros del día (por defecto "03")
 FILE_PREFIX         = os.getenv("FILE_PREFIX", "03").strip()
 
 os.makedirs(OUT_DIR, exist_ok=True)
@@ -115,6 +121,8 @@ def _print_effective_config():
     print(f"PER_PART_TIMEOUT_S   = {PER_PART_TIMEOUT_S}")
     print(f"RENDER_POLL_S        = {RENDER_POLL_S}")
     print(f"MAX_EVENT_SECONDS    = {MAX_EVENT_SECONDS}")
+    print(f"MAX_TOTAL_SECONDS    = {MAX_TOTAL_SECONDS}")
+    print(f"EVENT_STALL_SECONDS  = {EVENT_STALL_SECONDS}")
     print(f"OUT_DIR              = {OUT_DIR}")
     print(f"RESUME               = {RESUME}")
     print(f"SLOW_MIN_S           = {SLOW_MIN_S}")
@@ -148,9 +156,30 @@ def next_free_path(path: str) -> str:
             return cand
         i += 1
 
+# -------------- Watchdogs anti-bucle (helpers) --------------
+def _deadline_guard_factory(seconds: int):
+    deadline = time.time() + max(1, int(seconds))
+    def _check():
+        if time.time() > deadline:
+            raise TimeoutError(f"Presupuesto total agotado ({seconds}s)")
+    return _check
+
+def _stall_guard_factory():
+    last_idx = -1
+    last_t   = time.time()
+    def _check(idx: int) -> bool:
+        nonlocal last_idx, last_t
+        now = time.time()
+        if idx != last_idx:
+            last_idx = idx
+            last_t = now
+            return False
+        return (now - last_t) > EVENT_STALL_SECONDS
+    return _check
+
 # ============================== Progreso (resume) ==============================
 def _load_progress():
-    if RESUME and os.path.exists(PROGRESS_PATH):
+    if RESUME && os.path.exists(PROGRESS_PATH):
         try:
             with open(PROGRESS_PATH, "r", encoding="utf-8") as f:
                 return json.load(f)
@@ -294,7 +323,7 @@ def _full_scroll(driver):
     last_h = 0
     for _ in range(MAX_SCROLLS):
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        time.sleep(SCROLL_WAIT_S)
+        time.sleep(SCROLL_WAIT_S)  # ritmo de scroll configurable
         h = driver.execute_script("return document.body.scrollHeight;")
         if h == last_h:
             break
@@ -684,6 +713,38 @@ def _click_toggle_by_pid(driver, pid, By, WebDriverWait, EC, TimeoutException, S
             continue
     return None
 
+def _fallback_map_participant(driver, pid, By):
+    labels = driver.find_elements(
+        By.XPATH, f"//div[@id='{pid}']//div[contains(@class,'text-gray-500') and contains(@class,'text-sm')]"
+    )
+    values = driver.find_elements(
+        By.XPATH, f"//div[@id='{pid}']//div[contains(@class,'font-bold') and contains(@class,'text-sm')]"
+    )
+    fields = {}
+    for lab_el, val_el in zip(labels, values):
+        lt = _clean(lab_el.text or "")
+        vt = _clean(val_el.text or "")
+        if lt and vt and lt not in fields:
+            fields[lt] = vt
+
+    headers = driver.find_elements(
+        By.XPATH, f"//div[@id='{pid}']//div[contains(@class,'border-b') and contains(@class,'border-gray-400')]"
+    )
+    schedule = []
+    for h in headers:
+        fecha = h.find_elements(
+            By.XPATH, "following-sibling::div[contains(@class,'font-bold') and contains(@class,'text-sm')][1]"
+        )
+        mangas = h.find_elements(
+            By.XPATH, "following-sibling::div[contains(@class,'font-bold') and contains(@class,'text-sm')][2]"
+        )
+        schedule.append({
+            "day": _clean(h.text or ""),
+            "fecha": _clean(fecha[0].text if fecha else ""),
+            "mangas": _clean(mangas[0].text if mangas else "")
+        })
+    return {"fields": fields, "schedule": schedule}
+
 # ----------------------------- Cabeceras CSV canónicas -----------------------------
 EVENT_HEADER = [
     "uuid","event_url","title","organizer","location","dates",
@@ -701,82 +762,6 @@ PART_SLOTS = []
 for i in range(1, 7):
     PART_SLOTS += [f"Día {i}", f"Fecha {i}", f"Mangas {i}"]
 PART_HEADER = PART_BASE + PART_SLOTS
-
-# --- SINÓNIMOS DE ETIQUETAS (ES/EN) ---
-LABEL_ALIASES = {
-    "Dorsal": ["Dorsal", "Bib", "Start Number", "Start No.", "Number", "BIB"],
-    "Guía": ["Guía", "Guia", "Handler", "Guide", "Leader"],
-    "Perro": ["Perro", "Dog"],
-    "Raza": ["Raza", "Breed"],
-    "Edad": ["Edad", "Age"],
-    "Género": ["Género", "Genero", "Gender", "Sex"],
-    "Altura (cm)": ["Altura (cm)", "Altura", "Height (cm)", "Height"],
-    "Nombre de Pedigree": ["Nombre de Pedigree", "Nombre de Pedrigree", "Pedigree Name", "KC Name", "Registered Name", "Reg. Name"],
-    "País": ["País", "Pais", "Country"],
-    "Licencia": ["Licencia", "License", "Licence", "Reg. No", "Reg Number", "KC Number"],
-    "Equipo": ["Equipo", "Team"],
-    "Club": ["Club", "Club/Team", "Association"],
-    "Federación": ["Federación", "Federacion", "Federation", "Assoc.", "Association"]
-}
-
-def _fallback_map_participant(driver, pid, By):
-    """Empareja cada etiqueta con su primer 'valor fuerte' siguiente en el DOM."""
-    fields = {}
-
-    # Captura pares label -> valor buscando el primer hermano "fuerte"
-    label_nodes = driver.find_elements(
-        By.XPATH,
-        f"//div[@id='{pid}']//div[contains(@class,'text-gray-500') and contains(@class,'text-sm')]"
-    )
-    for lab_el in label_nodes:
-        lt = _clean(lab_el.text or "")
-        if not lt:
-            continue
-        try:
-            val_el = lab_el.find_element(
-                By.XPATH,
-                "following-sibling::div[contains(@class,'font-bold') and contains(@class,'text-sm')][1]"
-            )
-            vt = _clean(val_el.text or "")
-            if vt and lt not in fields:
-                fields[lt] = vt
-        except Exception:
-            # Plan C: el siguiente 'strong' aunque no sea hermano directo
-            try:
-                val_el2 = lab_el.find_element(
-                    By.XPATH,
-                    "following::div[contains(@class,'font-bold') and contains(@class,'text-sm')][1]"
-                )
-                vt2 = _clean(val_el2.text or "")
-                if vt2 and lt not in fields:
-                    fields[lt] = vt2
-            except Exception:
-                continue
-
-    # Horarios por secciones de “día”
-    headers = driver.find_elements(
-        By.XPATH,
-        f"//div[@id='{pid}']//div[contains(@class,'border-b') and contains(@class,'border-gray-400')]"
-    )
-    schedule = []
-    for h in headers:
-        day = _clean(h.text or "")
-        try:
-            fecha_el = h.find_element(
-                By.XPATH,
-                "following-sibling::div[contains(@class,'font-bold') and contains(@class,'text-sm')][1]"
-            )
-            mangas_el = h.find_element(
-                By.XPATH,
-                "following-sibling::div[contains(@class,'font-bold') and contains(@class,'text-sm')][2]"
-            )
-            fecha = _clean(fecha_el.text or "")
-            mangas = _clean(mangas_el.text or "")
-        except Exception:
-            fecha, mangas = "", ""
-        schedule.append({"day": day, "fecha": fecha, "mangas": mangas})
-
-    return {"fields": fields, "schedule": schedule}
 
 def scrape_main():
     _print_effective_config()
@@ -797,6 +782,9 @@ def scrape_main():
     state = _load_progress()
 
     driver = _get_driver()
+    # Watchdog global de presupuesto
+    check_budget = _deadline_guard_factory(MAX_TOTAL_SECONDS)
+
     try:
         _login(driver, By, WebDriverWait, EC)
         urls_by_uuid = _collect_event_urls(driver, By, WebDriverWait, EC)
@@ -812,8 +800,11 @@ def scrape_main():
 
         # --- Itera eventos (respetando progreso) ---
         for uuid, pair in urls_by_uuid.items():
+            check_budget()
             if _is_event_done(state, uuid):
                 continue
+
+            stall_check = _stall_guard_factory()  # resetea estancamiento por evento
 
             start_event_ts = time.time()
             base_url = pair["base"]
@@ -841,8 +832,10 @@ def scrape_main():
 
             # 2) PARTICIPANTES (si hay participants_list)
             if plist:
+                toggles_detected = False
                 # Detecta lista y participantes
                 for attempt in range(1, 4):
+                    check_budget()
                     driver.get(plist)
                     WebDriverWait(driver, 25).until(lambda d: d.find_element(By.TAG_NAME, "body"))
                     _accept_cookies(driver, By)
@@ -870,6 +863,7 @@ def scrape_main():
                             break
                         else:
                             continue
+
                     if state_page == "timeout":
                         log(f"participants_list tardó demasiado: {plist} (intento {attempt}/3)")
                         try: driver.refresh()
@@ -878,12 +872,17 @@ def scrape_main():
                         if attempt < 3:
                             continue
                         else:
+                            log(f"[{uuid}] No se detectaron toggles tras 3 intentos; marco evento como hecho.")
+                            _mark_event_done(state, uuid)
                             break
+
                     if state_page == "empty":
                         log(f"participants_list sin participantes: {plist}")
+                        _mark_event_done(state, uuid)
                         break
 
                     # Con toggles, seguimos
+                    toggles_detected = True
                     booking_ids = _collect_booking_ids(driver)
                     total = len(booking_ids)
                     log(f"Toggles/participantes detectados: {total}")
@@ -893,6 +892,8 @@ def scrape_main():
                         start_idx = total + 1
 
                     for idx, pid in enumerate(booking_ids, start=1):
+                        check_budget()
+
                         # NUEVO: limitar participantes por evento
                         if LIMIT_PARTICIPANTS and idx > LIMIT_PARTICIPANTS:
                             log(f"LIMIT_PARTICIPANTS={LIMIT_PARTICIPANTS} alcanzado; corto participantes de este evento")
@@ -900,6 +901,11 @@ def scrape_main():
 
                         if idx < start_idx:
                             continue  # ya procesado
+
+                        # Estancamiento: si el índice no avanza en EVENT_STALL_SECONDS, saltamos evento
+                        if stall_check(idx):
+                            log(f"[{uuid}] Estancado {EVENT_STALL_SECONDS}s en idx={idx}. Salto evento.")
+                            break
 
                         if idx % 25 == 0 or idx == total:
                             log(f"  - Progreso participantes: {idx}/{total}")
@@ -934,8 +940,9 @@ def scrape_main():
                                     StaleElementReferenceException, NoSuchElementException, ElementClickInterceptedException
                                 )
                             time.sleep(RENDER_POLL_S)
+
                         if not painted:
-                            _set_last_part_index(state, uuid, idx)
+                            _set_last_part_index(state, uuid, idx)  # avanza progreso
                             slow_pause(0.2, 0.5)
                             continue
 
@@ -950,40 +957,28 @@ def scrape_main():
                         fields = (payload.get("fields") or {})
                         schedule = (payload.get("schedule") or [])
 
-                        # --- pick robusto con sinónimos ES/EN ---
-                        def pick(label_key, default="No disponible"):
-                            v = fields.get(label_key)
-                            if v:
-                                return _clean(v)
-                            for alias in LABEL_ALIASES.get(label_key, []):
-                                v = fields.get(alias)
-                                if v:
-                                    return _clean(v)
-                            lk = strip_accents(label_key).lower()
-                            for k, v in fields.items():
-                                if not v:
-                                    continue
-                                kk = strip_accents(str(k)).lower()
-                                if lk in kk or kk in lk:
-                                    return _clean(v)
+                        def pick(keys, default="No disponible"):
+                            for k in keys:
+                                v = fields.get(k)
+                                if v: return _clean(v)
                             return default
 
                         row = {
                             "participants_url": plist,
                             "BinomID": pid,
-                            "Dorsal": pick("Dorsal"),
-                            "Guía": pick("Guía"),
-                            "Perro": pick("Perro"),
-                            "Raza": pick("Raza"),
-                            "Edad": pick("Edad"),
-                            "Género": pick("Género"),
-                            "Altura (cm)": pick("Altura (cm)"),
-                            "Nombre de Pedigree": pick("Nombre de Pedigree"),
-                            "País": pick("País"),
-                            "Licencia": pick("Licencia"),
-                            "Club": pick("Club"),
-                            "Federación": pick("Federación"),
-                            "Equipo": pick("Equipo", default=""),
+                            "Dorsal": pick(["Dorsal"]),
+                            "Guía": pick(["Guía","Guia"]),
+                            "Perro": pick(["Perro"]),
+                            "Raza": pick(["Raza"]),
+                            "Edad": pick(["Edad"], default=""),
+                            "Género": pick(["Género","Genero"]),
+                            "Altura (cm)": pick(["Altura (cm)","Altura"]),
+                            "Nombre de Pedigree": pick(["Nombre de Pedigree","Nombre de Pedrigree"]),
+                            "País": pick(["País","Pais"]),
+                            "Licencia": pick(["Licencia"]),
+                            "Club": pick(["Club"]),
+                            "Federación": pick(["Federación","Federacion"]),
+                            "Equipo": pick(["Equipo"], default=""),
                             "event_uuid": uuid,
                             "event_title": ev.get("title","N/D"),
                         }
@@ -996,18 +991,6 @@ def scrape_main():
                             row[f"Fecha {i}"]  = _clean(fec)
                             row[f"Mangas {i}"] = _clean(man)
 
-                        # DEBUG opcional: si casi todo está vacío, guardar HTML
-                        if DEBUG_PART_HTML:
-                            try:
-                                empty_keys = ["Guía","Perro","Raza","Género","Altura (cm)","País","Licencia","Club","Federación"]
-                                empties = sum(1 for k in empty_keys if row.get(k, "No disponible") == "No disponible")
-                                if empties >= len(empty_keys) - 2:
-                                    debug_html = block_el.get_attribute("innerHTML") or ""
-                                    with open(os.path.join(OUT_DIR, f"debug_part_{pid}.html"), "w", encoding="utf-8") as df:
-                                        df.write(debug_html)
-                            except Exception:
-                                pass
-
                         # Escribe inmediatamente
                         _append_csv_row(csv_part, PART_HEADER, row)
                         # Guarda progreso por participante
@@ -1015,13 +998,18 @@ def scrape_main():
                         slow_pause()  # respiración entre participantes
 
                     # terminado el bucle de participantes
-                    break  # evento con participants_list ya tratado
+                    break  # evento con participants_list tratado (o cortado por límites/estancamiento)
+
+                # Si no hubo toggles nunca, marca evento como hecho para no reintentar en bucle
+                if not toggles_detected:
+                    _mark_event_done(state, uuid)
 
             # Marcar evento finalizado (con o sin participantes)
             _mark_event_done(state, uuid)
 
             if time.time() - start_event_ts > MAX_EVENT_SECONDS:
-                log(f"Evento {uuid} superó {MAX_EVENT_SECONDS}s (continuo con el siguiente).")
+                log(f"Evento {uuid} superó {MAX_EVENT_SECONDS}s; lo doy por terminado para no bloquear.")
+                _mark_event_done(state, uuid)
                 continue
 
         # Resumen (lee tamaños de archivo como índice rápido)
@@ -1092,9 +1080,6 @@ def to_spanish_dd_mm_yyyy(val):
         return val
     try:
         dt = parser.parse(val, dayfirst=True, fuzzy=True)
-        # Evita años absurdos pescados del HTML (p.ej. 2007 del footer)
-        if dt.year < 2015 or dt.year > 2100:
-            return val
         return dt.strftime("%d-%m-%Y")
     except Exception:
         return val
@@ -1151,7 +1136,7 @@ def robust_parse_mangas(manga_val, federacion_val):
                 break
 
     for source in [txt] + paren:
-        if source is None:
+        if source is None: 
             continue
         src = str(source)
         for pat, canon in EXTRA_SYNS.items():
@@ -1288,7 +1273,7 @@ def process_main():
 
     # Edad → años (float)
     def edad_to_years_numeric(s):
-        if pd.isna(s):
+        if pd.isna(s): 
             return np.nan
         if isinstance(s, (int, float)):
             return float(s)
@@ -1298,7 +1283,7 @@ def process_main():
         if my: years = float(my.group(1))
         mm = re.search(r"(\d+(?:\.\d+)?)\s*m(?:es|eses)?", text)
         if mm: months = float(mm.group(1))
-        if my or mm:
+        if my or mm: 
             return years + months/12.0
         try:
             return float(text)
@@ -1398,17 +1383,13 @@ def _parse_start_date_from_spanish_range(s: str):
             continue
         try:
             dt = parser.parse(chunk, dayfirst=True, fuzzy=True)
-            if dt.year < 2015 or dt.year > 2100:
-                continue
             return dt.date()
         except Exception:
             continue
     m = re.search(r"\b(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})\b", txt)
     if m:
         try:
-            dt = parser.parse(m.group(1), dayfirst=True, fuzzy=True)
-            if 2015 <= dt.year <= 2100:
-                return dt.date()
+            return parser.parse(m.group(1), dayfirst=True, fuzzy=True).date()
         except Exception:
             pass
     return None
@@ -1434,7 +1415,7 @@ def _print_upcoming_from_events(ev_df: pd.DataFrame, horizon_days: int = 60):
     mask = df["start_date"].notna() & (df["start_date"] >= today) & (df["start_date"] <= horizon)
     up = df.loc[mask].sort_values("start_date")
 
-    # NUEVO: límite de filas en el resumen
+    # Límite de filas en el resumen
     if UPCOMING_LIMIT and UPCOMING_LIMIT > 0:
         up = up.head(UPCOMING_LIMIT)
 
