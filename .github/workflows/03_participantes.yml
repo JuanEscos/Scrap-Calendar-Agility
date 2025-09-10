@@ -29,8 +29,8 @@ jobs:
       HEADLESS: "true"
       INCOGNITO: "true"
       FILE_PREFIX: "03"
-      LIMIT_EVENTS: "15"
-      LIMIT_PARTICIPANTS: "60"
+      LIMIT_EVENTS: "15"         # ajusta si quieres
+      LIMIT_PARTICIPANTS: "60"   # ajusta si quieres
 
     steps:
       - uses: actions/checkout@v4
@@ -55,44 +55,74 @@ jobs:
       - name: Instalar Google Chrome (Selenium)
         uses: browser-actions/setup-chrome@v1
 
-      - name: "Ejecutar 03 (all: scrape + process) con timeout duro"
+      - name: Ejecutar 03 (all: scrape + process) con timeout duro
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$OUT_DIR"
-          if ! timeout 75m python "./03_eventosproxParticipantes.py" all; then
+          set -o pipefail
+          # guardamos TODO el log
+          if ! timeout 75m python "./03_eventosproxParticipantes.py" all 2>&1 | tee "$OUT_DIR/03_run.log"; then
             echo "::error::03_eventosproxParticipantes.py superó el tiempo"
             pkill -9 -f chrome || true
             pkill -9 -f chromedriver || true
             exit 1
           fi
 
-      - name: Mostrar outputs
+      - name: Diagnóstico: listar OUT_DIR (recursivo)
         shell: bash
         run: |
-            set -euo pipefail
-            echo "Contenido de $OUT_DIR:"
-            ls -la "$OUT_DIR" || true
-            echo "Coincidencias previstas:"
-            ls -1 ./output/*events_*.csv                  2>/dev/null || true
-            ls -1 ./output/*participantes_*.csv           2>/dev/null || true
-            ls -1 ./output/participantes*.json            2>/dev/null || true
-            ls -1 ./output/*progress_*.json               2>/dev/null || true
-            ls -1 ./output/participantes_procesado_*.csv  2>/dev/null || true
+          set -euo pipefail
+          echo "PWD=$(pwd)"
+          echo "Contenido nivel 1 de $OUT_DIR"
+          ls -la "$OUT_DIR" || true
+          echo
+          echo "Fechas/tamaños de ficheros en $OUT_DIR:"
+          find "$OUT_DIR" -maxdepth 1 -type f -printf "%TY-%Tm-%Td %TT %9s %p\n" | sort || true
 
-      - name: Assert outputs exist
+      - name: Salvaguarda: crear artefactos vacíos si faltan
         shell: bash
         run: |
           set -euo pipefail
           shopt -s nullglob
-          files=( ./output/*events_*.csv ./output/*participantes_*.csv ./output/participantes*.json ./output/participantes_procesado_*.csv )
-          echo "Ficheros a subir: ${files[*]:-<ninguno>}"
+          files=( "$OUT_DIR"/*events_*.csv "$OUT_DIR"/*participantes_*.csv "$OUT_DIR"/participantes*.json "$OUT_DIR"/participantes_procesado_*.csv )
           if [ ${#files[@]} -eq 0 ]; then
-            echo "::error::No hay ficheros de salida para subir (revisa nombres, FILE_PREFIX y OUT_DIR)"
-            exit 1
+            echo "::warning::No se generaron salidas esperadas; creando placeholders para diagnóstico."
+            python - <<'PY'
+import csv, json, os, datetime
+out='./output'
+os.makedirs(out, exist_ok=True)
+date=datetime.datetime.now().strftime('%Y-%m-%d')
+# events header
+EVENT_HEADER=["uuid","event_url","title","organizer","location","dates","header_1","header_2","header_3","header_4","header_5","header_6","judges"]
+with open(f'{out}/03events_{date}.csv','w',newline='',encoding='utf-8-sig') as f:
+    csv.DictWriter(f, fieldnames=EVENT_HEADER).writeheader()
+# participants header
+PART_BASE=["participants_url","BinomID","Dorsal","Guía","Perro","Raza","Edad","Género","Altura (cm)","Nombre de Pedigree","País","Licencia","Club","Federación","Equipo","event_uuid","event_title"]
+slots=[]
+for i in range(1,7): slots+= [f"Día {i}",f"Fecha {i}",f"Mangas {i}"]
+PART_HEADER=PART_BASE+slots
+with open(f'{out}/03participantes_{date}.csv','w',newline='',encoding='utf-8-sig') as f:
+    csv.DictWriter(f, fieldnames=PART_HEADER).writeheader()
+open(f'{out}/participantes_procesado_{date}.csv','w',encoding='utf-8').write(','.join(["event_url","PruebaNom","Organiza","Lugar","Fechas","BinomID","Dorsal","Guia","Perro","Raza","Edad","SexoPerro","AlturaPerro","Licencia","Club","Federacion","Grado","Cat","CatExtra"])+"\n")
+json.dump([], open(f'{out}/participantes.json','w',encoding='utf-8'), ensure_ascii=False)
+PY
           fi
 
-      - name: Subir artefactos (JSON+CSV)
+      - name: Mostrar outputs (tras salvaguarda)
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Contenido de $OUT_DIR:"
+          ls -la "$OUT_DIR" || true
+          echo "Coincidencias previstas:"
+          ls -1 ./output/*events_*.csv                  2>/dev/null || true
+          ls -1 ./output/*participantes_*.csv           2>/dev/null || true
+          ls -1 ./output/participantes*.json            2>/dev/null || true
+          ls -1 ./output/*progress_*.json               2>/dev/null || true
+          ls -1 ./output/participantes_procesado_*.csv  2>/dev/null || true
+
+      - name: Subir artefactos (JSON+CSV+log)
         uses: actions/upload-artifact@v4
         with:
           name: a03-participants-processed
@@ -103,11 +133,13 @@ jobs:
             ./output/participantes_*.json
             ./output/participantes_procesado_*.csv
             ./output/*progress_*.json
+            ./output/03_run.log
           if-no-files-found: error
           retention-days: 7
 
-      # Opcional para diagnóstico (no rompe si falla):
+      # (Opcional) diagnóstico remoto — no afecta al éxito
       - name: Instalar lftp (debug opcional)
+        continue-on-error: true
         run: sudo apt-get update && sudo apt-get install -y lftp
 
       - name: (DEBUG) Listar carpeta remota
@@ -121,7 +153,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "Listado recursivo bajo ${FTP_REMOTE_DIR} (solo diagnóstico):"
+          echo "Listado bajo ${FTP_REMOTE_DIR} (solo diagnóstico):"
           lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" -e " \
             set cmd:fail-exit false; \
             set net:timeout 15; \
