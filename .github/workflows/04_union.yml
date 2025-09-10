@@ -29,7 +29,6 @@ jobs:
           python-version: '3.11'
 
       # ---------- PARTICIPANTES (03) ----------
-      # Automático (encadenado): descargar artefacto del run que dispara
       - name: Descargar artefacto 03 (workflow_run)
         if: ${{ github.event_name == 'workflow_run' }}
         uses: actions/download-artifact@v4
@@ -39,7 +38,6 @@ jobs:
           path: ./artifacts03
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      # Manual: buscar y bajar el último artefacto 'a03-participants-processed'
       - name: Herramientas para descarga manual
         if: ${{ github.event_name == 'workflow_dispatch' }}
         run: sudo apt-get update && sudo apt-get install -y jq unzip
@@ -76,7 +74,6 @@ jobs:
           ls -la ./artifacts03 || true
 
       # ---------- EVENTOS (01) ----------
-      # Descarga del 01 desde FTP: 01events_last.json
       - name: Instalar lftp
         run: sudo apt-get update && sudo apt-get install -y lftp
 
@@ -89,12 +86,23 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p artifacts01
-          REMOTE_BASE="${FTP_REMOTE_DIR}/Competiciones/ListadoEventos/Workflows/01"
-          echo "Descargando de: ${FTP_SERVER}${REMOTE_BASE}/01events_last.json"
-          lftp -u "${FTP_USERNAME}","${FTP_PASSWORD}" "${FTP_SERVER}" -e "\
-            set net:timeout 20; set net:max-retries 3; set net:persist-retry 2; \
-            set ftp:passive-mode true; set ftp:ssl-force true; set ftp:ssl-protect-data true; set ssl:verify-certificate no; \
-            get -O ./artifacts01 \"${REMOTE_BASE}/01events_last.json\"; bye"
+          lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" -e " \
+            set cmd:fail-exit true; \
+            set net:timeout 25; \
+            set net:max-retries 1; \
+            set net:persist-retries 0; \
+            set ftp:ssl-force true; \
+            set ftp:ssl-protect-data true; \
+            set ftp:passive-mode true; \
+            set ftp:prefer-epsv false; \
+            set ssl:verify-certificate no; \
+            cd '${FTP_REMOTE_DIR}' || cd '/${FTP_REMOTE_DIR}'; \
+            cd 'Competiciones'; \
+            cd 'ListadoEventos'; \
+            cd 'Workflows'; \
+            cd '01'; \
+            get -O '${PWD}/artifacts01' '01events_last.json'; \
+            bye"
           ls -la ./artifacts01 || true
 
       - name: Comprobación entradas descargadas
@@ -105,11 +113,12 @@ jobs:
           find ./artifacts01 -maxdepth 2 -type f -printf "%P\n" || true
 
       # ---------- UNIÓN ----------
+      # ¡¡OJO!! El script acepta SOLO 2 argumentos: IN_PATH y FINAL_OUT
       - name: Ejecutar unión 04_eventosproxUnion.py
         run: |
           set -euo pipefail
           mkdir -p output
-          python "./04_eventosproxUnion.py" "./artifacts03" "./artifacts01" "./output/participants_completos_final.json"
+          python "./04_eventosproxUnion.py" "./artifacts03" "./output/participants_completos_final.json"
 
       - name: Verificar resultado y hash local
         run: |
@@ -142,15 +151,28 @@ jobs:
           WF_DIR="${FTP_REMOTE_DIR}/Competiciones/ListadoEventos/Workflows/04"
           PUB_DIR="${FTP_REMOTE_DIR}/Competiciones/ListadoParticipantes"
 
-          echo "Subiendo a Workflows/04 y a ListadoParticipantes..."
-          lftp -u "${FTP_USERNAME}","${FTP_PASSWORD}" "${FTP_SERVER}" -e "\
-            set net:timeout 20; set net:max-retries 3; set net:persist-retry 2; \
-            set ftp:passive-mode true; set ftp:ssl-force true; set ftp:ssl-protect-data true; set ssl:verify-certificate no; \
-            mkdir -p \"${WF_DIR}\"; mkdir -p \"${PUB_DIR}\"; \
-            put -O \"${WF_DIR}\" \"${FILE}\" -o participants_completos_final_${TS}.json; \
-            put -O \"${WF_DIR}\" \"${FILE}\" -o participants_completos_final_last.json; \
-            put -O \"${PUB_DIR}\" \"${FILE}\" -o participants_completos_final_${TS}.json; \
-            put -O \"${PUB_DIR}\" \"${FILE}\" -o participants_completos_final.json; \
+          lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" -e " \
+            set cmd:fail-exit true; \
+            set net:timeout 25; \
+            set net:max-retries 1; \
+            set net:persist-retries 0; \
+            set ftp:ssl-force true; \
+            set ftp:ssl-protect-data true; \
+            set ftp:passive-mode true; \
+            set ftp:prefer-epsv false; \
+            set ssl:verify-certificate no; \
+            cd '${FTP_REMOTE_DIR}' || cd '/${FTP_REMOTE_DIR}'; \
+            mkdir -f Competiciones; cd Competiciones; \
+            mkdir -f ListadoEventos; cd ListadoEventos; \
+            mkdir -f Workflows; cd Workflows; \
+            mkdir -f 04; cd 04; \
+            put -O . '${FILE}' -o 'participants_completos_final_${TS}.json'; \
+            put -O . '${FILE}' -o 'participants_completos_final_last.json'; \
+            cd '${FTP_REMOTE_DIR}' || cd '/${FTP_REMOTE_DIR}'; \
+            mkdir -f Competiciones; cd Competiciones; \
+            mkdir -f ListadoParticipantes; cd ListadoParticipantes; \
+            put -O . '${FILE}' -o 'participants_completos_final_${TS}.json'; \
+            put -O . '${FILE}' -o 'participants_completos_final.json'; \
             bye"
 
       - name: Verificar remoto (descarga y compara hash de ListadoParticipantes)
@@ -161,11 +183,21 @@ jobs:
           FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
         run: |
           set -euo pipefail
-          PUB_DIR="${FTP_REMOTE_DIR}/Competiciones/ListadoParticipantes"
-          lftp -u "${FTP_USERNAME}","${FTP_PASSWORD}" "${FTP_SERVER}" -e "\
-            set net:timeout 20; set net:max-retries 3; set net:persist-retry 2; \
-            set ftp:passive-mode true; set ftp:ssl-force true; set ftp:ssl-protect-data true; set ssl:verify-certificate no; \
-            get -O . \"${PUB_DIR}/participants_completos_final.json\" -o remote_final.json; bye"
+          rm -f remote_final.json || true
+          lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" -e " \
+            set cmd:fail-exit true; \
+            set net:timeout 25; \
+            set net:max-retries 1; \
+            set net:persist-retries 0; \
+            set ftp:ssl-force true; \
+            set ftp:ssl-protect-data true; \
+            set ftp:passive-mode true; \
+            set ftp:prefer-epsv false; \
+            set ssl:verify-certificate no; \
+            cd '${FTP_REMOTE_DIR}' || cd '/${FTP_REMOTE_DIR}'; \
+            cd Competiciones; cd ListadoParticipantes; \
+            get -O '${PWD}' 'participants_completos_final.json' -o 'remote_final.json'; \
+            bye"
           sha256sum remote_final.json | awk '{print $1}' > remote.sha256
           echo "Hash remoto: $(cat remote.sha256)"
           diff -q local.sha256 remote.sha256 && echo "OK: hash coincide"
