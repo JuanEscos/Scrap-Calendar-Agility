@@ -73,12 +73,13 @@ jobs:
         run: |
           set -euo pipefail
           echo "PWD=$(pwd)"
-          echo "Contenido nivel 1 de $OUT_DIR"
+          echo "Contenido de $OUT_DIR:"
           ls -la "$OUT_DIR" || true
           echo
-          echo "Fechas/tamaños de ficheros en $OUT_DIR:"
+          echo "Fechas/tamaños:"
           find "$OUT_DIR" -maxdepth 1 -type f -printf "%TY-%Tm-%Td %TT %9s %p\n" | sort || true
 
+      # === FIX: versión sin here-doc, sólo shell ===
       - name: "Salvaguarda: crear artefactos vacíos si faltan"
         shell: bash
         run: |
@@ -87,25 +88,24 @@ jobs:
           files=( "$OUT_DIR"/*events_*.csv "$OUT_DIR"/*participantes_*.csv "$OUT_DIR"/participantes*.json "$OUT_DIR"/participantes_procesado_*.csv )
           if [ ${#files[@]} -eq 0 ]; then
             echo "::warning::No se generaron salidas esperadas; creando placeholders para diagnóstico."
-            python - <<'PY'
-import csv, json, os, datetime
-out='./output'
-os.makedirs(out, exist_ok=True)
-date=datetime.datetime.now().strftime('%Y-%m-%d')
-# events header
-EVENT_HEADER=["uuid","event_url","title","organizer","location","dates","header_1","header_2","header_3","header_4","header_5","header_6","judges"]
-with open(f'{out}/03events_{date}.csv','w',newline='',encoding='utf-8-sig') as f:
-    csv.DictWriter(f, fieldnames=EVENT_HEADER).writeheader()
-# participants header
-PART_BASE=["participants_url","BinomID","Dorsal","Guía","Perro","Raza","Edad","Género","Altura (cm)","Nombre de Pedigree","País","Licencia","Club","Federación","Equipo","event_uuid","event_title"]
-slots=[]
-for i in range(1,7): slots+= [f"Día {i}",f"Fecha {i}",f"Mangas {i}"]
-PART_HEADER=PART_BASE+slots
-with open(f'{out}/03participantes_{date}.csv','w',newline='',encoding='utf-8-sig') as f:
-    csv.DictWriter(f, fieldnames=PART_HEADER).writeheader()
-open(f'{out}/participantes_procesado_{date}.csv','w',encoding='utf-8').write(','.join(["event_url","PruebaNom","Organiza","Lugar","Fechas","BinomID","Dorsal","Guia","Perro","Raza","Edad","SexoPerro","AlturaPerro","Licencia","Club","Federacion","Grado","Cat","CatExtra"])+"\n")
-json.dump([], open(f'{out}/participantes.json','w',encoding='utf-8'), ensure_ascii=False)
-PY
+            DATE="$(date +%F)"
+
+            # events
+            echo "uuid,event_url,title,organizer,location,dates,header_1,header_2,header_3,header_4,header_5,header_6,judges" > "$OUT_DIR/03events_${DATE}.csv"
+
+            # participants
+            base="participants_url,BinomID,Dorsal,Guía,Perro,Raza,Edad,Género,Altura (cm),Nombre de Pedigree,País,Licencia,Club,Federación,Equipo,event_uuid,event_title"
+            slots=""
+            for i in 1 2 3 4 5 6; do
+              slots="${slots},Día ${i},Fecha ${i},Mangas ${i}"
+            done
+            echo "${base}${slots}" > "$OUT_DIR/03participantes_${DATE}.csv"
+
+            # procesado
+            echo "event_url,PruebaNom,Organiza,Lugar,Fechas,BinomID,Dorsal,Guia,Perro,Raza,Edad,SexoPerro,AlturaPerro,Licencia,Club,Federacion,Grado,Cat,CatExtra" > "$OUT_DIR/participantes_procesado_${DATE}.csv"
+
+            # json
+            echo "[]" > "$OUT_DIR/participantes.json"
           fi
 
       - name: "Mostrar outputs (tras salvaguarda)"
@@ -151,7 +151,7 @@ PY
         shell: bash
         run: |
           set -euo pipefail
-          echo "Listado bajo ${FTP_REMOTE_DIR} (solo diagnóstico):"
+          echo "Listado bajo ${FTP_REMOTE_DIR} (diagnóstico):"
           lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" -e " \
             set cmd:fail-exit false; \
             set net:timeout 15; \
