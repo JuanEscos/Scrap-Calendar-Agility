@@ -29,8 +29,8 @@ jobs:
       HEADLESS: "true"
       INCOGNITO: "true"
       FILE_PREFIX: "03"
-      LIMIT_EVENTS: "15"         # ajusta si quieres
-      LIMIT_PARTICIPANTS: "60"   # ajusta si quieres
+      LIMIT_EVENTS: "15"
+      LIMIT_PARTICIPANTS: "60"
 
     steps:
       - uses: actions/checkout@v4
@@ -41,7 +41,7 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.txt
 
-      - name: Instalar dependencias
+      - name: "Instalar dependencias"
         shell: bash
         run: |
           set -euo pipefail
@@ -52,16 +52,15 @@ jobs:
             pip install selenium webdriver-manager beautifulsoup4 python-dotenv pandas python-dateutil numpy
           fi
 
-      - name: Instalar Google Chrome (Selenium)
+      - name: "Instalar Google Chrome (Selenium)"
         uses: browser-actions/setup-chrome@v1
 
-      - name: Ejecutar 03 (all: scrape + process) con timeout duro
+      - name: "Ejecutar 03 (all: scrape + process) con timeout duro"
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$OUT_DIR"
           set -o pipefail
-          # guardamos TODO el log
           if ! timeout 75m python "./03_eventosproxParticipantes.py" all 2>&1 | tee "$OUT_DIR/03_run.log"; then
             echo "::error::03_eventosproxParticipantes.py superó el tiempo"
             pkill -9 -f chrome || true
@@ -69,7 +68,7 @@ jobs:
             exit 1
           fi
 
-      - name: Diagnóstico: listar OUT_DIR (recursivo)
+      - name: "Diagnóstico: listar OUT_DIR (recursivo)"
         shell: bash
         run: |
           set -euo pipefail
@@ -80,7 +79,7 @@ jobs:
           echo "Fechas/tamaños de ficheros en $OUT_DIR:"
           find "$OUT_DIR" -maxdepth 1 -type f -printf "%TY-%Tm-%Td %TT %9s %p\n" | sort || true
 
-      - name: Salvaguarda: crear artefactos vacíos si faltan
+      - name: "Salvaguarda: crear artefactos vacíos si faltan"
         shell: bash
         run: |
           set -euo pipefail
@@ -109,7 +108,7 @@ json.dump([], open(f'{out}/participantes.json','w',encoding='utf-8'), ensure_asc
 PY
           fi
 
-      - name: Mostrar outputs (tras salvaguarda)
+      - name: "Mostrar outputs (tras salvaguarda)"
         shell: bash
         run: |
           set -euo pipefail
@@ -122,7 +121,7 @@ PY
           ls -1 ./output/*progress_*.json               2>/dev/null || true
           ls -1 ./output/participantes_procesado_*.csv  2>/dev/null || true
 
-      - name: Subir artefactos (JSON+CSV+log)
+      - name: "Subir artefactos (JSON+CSV+log)"
         uses: actions/upload-artifact@v4
         with:
           name: a03-participants-processed
@@ -137,12 +136,11 @@ PY
           if-no-files-found: error
           retention-days: 7
 
-      # (Opcional) diagnóstico remoto — no afecta al éxito
-      - name: Instalar lftp (debug opcional)
+      - name: "Instalar lftp (debug opcional)"
         continue-on-error: true
         run: sudo apt-get update && sudo apt-get install -y lftp
 
-      - name: (DEBUG) Listar carpeta remota
+      - name: "(DEBUG) Listar carpeta remota"
         if: always()
         continue-on-error: true
         env:
