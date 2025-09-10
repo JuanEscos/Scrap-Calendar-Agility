@@ -28,9 +28,9 @@ jobs:
       FLOW_PASS:  ${{ secrets.FLOW_PASS }}
       HEADLESS: "true"
       INCOGNITO: "true"
-      FILE_PREFIX: "03"          # el script genera 03events_*.csv, 03participantes_*.csv
-      LIMIT_EVENTS: "15"         # evita runs larguísimos
-      LIMIT_PARTICIPANTS: "60"   # idem
+      FILE_PREFIX: "03"
+      LIMIT_EVENTS: "15"
+      LIMIT_PARTICIPANTS: "60"
 
     steps:
       - uses: actions/checkout@v4
@@ -42,6 +42,7 @@ jobs:
           cache-dependency-path: requirements.txt
 
       - name: Instalar dependencias
+        shell: bash
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip setuptools wheel
@@ -54,13 +55,11 @@ jobs:
       - name: Instalar Google Chrome (Selenium)
         uses: browser-actions/setup-chrome@v1
 
-      - name: Ejecutar 03 (all: scrape + process) con timeout duro
-        id: run03
+      - name: "Ejecutar 03 (all: scrape + process) con timeout duro"
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$OUT_DIR"
-          # Timeout duro para evitar bucles: 75 minutos (ajusta si te hace falta)
           if ! timeout 75m python "./03_eventosproxParticipantes.py" all; then
             echo "::error::03_eventosproxParticipantes.py superó el tiempo"
             pkill -9 -f chrome || true
@@ -69,18 +68,18 @@ jobs:
           fi
 
       - name: Mostrar outputs
+        shell: bash
         run: |
-          set -euo pipefail
-          echo "Contenido de $OUT_DIR:"
-          ls -la "$OUT_DIR" || true
-          echo "Coincidencias previstas:"
-          ls -1 ./output/*events_*.csv            2>/dev/null || true
-          ls -1 ./output/*participantes_*.csv     2>/dev/null || true
-          ls -1 ./output/participantes*.json      2>/dev/null || true
-          ls -1 ./output/*progress_*.json         2>/dev/null || true
-          ls -1 ./output/participantes_procesado_*.csv 2>/dev/null || true
+            set -euo pipefail
+            echo "Contenido de $OUT_DIR:"
+            ls -la "$OUT_DIR" || true
+            echo "Coincidencias previstas:"
+            ls -1 ./output/*events_*.csv                  2>/dev/null || true
+            ls -1 ./output/*participantes_*.csv           2>/dev/null || true
+            ls -1 ./output/participantes*.json            2>/dev/null || true
+            ls -1 ./output/*progress_*.json               2>/dev/null || true
+            ls -1 ./output/participantes_procesado_*.csv  2>/dev/null || true
 
-      # Garantiza que hay algo que subir (si no, falla claramente aquí)
       - name: Assert outputs exist
         shell: bash
         run: |
@@ -89,7 +88,8 @@ jobs:
           files=( ./output/*events_*.csv ./output/*participantes_*.csv ./output/participantes*.json ./output/participantes_procesado_*.csv )
           echo "Ficheros a subir: ${files[*]:-<ninguno>}"
           if [ ${#files[@]} -eq 0 ]; then
-            echo "::error::No hay ficheros de salida para subir (revisa nombres, FILE_PREFIX y OUT_DIR)"; exit 1
+            echo "::error::No hay ficheros de salida para subir (revisa nombres, FILE_PREFIX y OUT_DIR)"
+            exit 1
           fi
 
       - name: Subir artefactos (JSON+CSV)
@@ -106,11 +106,11 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      # (Opcional) Diagnóstico en FTP: instalar lftp y listar carpeta remota
-      - name: Instalar lftp (para debug opcional)
+      # Opcional para diagnóstico (no rompe si falla):
+      - name: Instalar lftp (debug opcional)
         run: sudo apt-get update && sudo apt-get install -y lftp
 
-      - name: (DEBUG opcional) Listar carpeta remota donde suele caer 03
+      - name: (DEBUG) Listar carpeta remota
         if: always()
         continue-on-error: true
         env:
@@ -118,9 +118,10 @@ jobs:
           FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
           FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
           FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
+        shell: bash
         run: |
           set -euo pipefail
-          echo "Buscando artefactos del 03 bajo ${FTP_REMOTE_DIR} (solo diagnóstico)"
+          echo "Listado recursivo bajo ${FTP_REMOTE_DIR} (solo diagnóstico):"
           lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" -e " \
             set cmd:fail-exit false; \
             set net:timeout 15; \
@@ -131,5 +132,5 @@ jobs:
             set ftp:prefer-epsv false; \
             set ssl:verify-certificate no; \
             cd '${FTP_REMOTE_DIR}' || cd '/${FTP_REMOTE_DIR}'; \
-            cls -1 -R | head -n 200 || true; \
+            cls -l -R | head -n 200 || true; \
             bye"
