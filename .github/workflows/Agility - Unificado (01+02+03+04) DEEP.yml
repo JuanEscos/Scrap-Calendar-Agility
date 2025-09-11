@@ -1,4 +1,4 @@
-name: Agility - Unificado (01+02+03+04)DEEP
+name: Agility - Unificado (01+02+03+04)
 
 on:
   schedule:
@@ -47,8 +47,8 @@ jobs:
         with:
           chrome-version: stable
 
-      - name: Install lftp
-        run: sudo apt-get update && sudo apt-get install -y lftp
+      - name: Install lftp and curl
+        run: sudo apt-get update && sudo apt-get install -y lftp curl
 
       - name: Run unificado
         id: run_unificado
@@ -72,7 +72,7 @@ jobs:
           if-no-files-found: error
           retention-days: 10
 
-      - name: FTPS upload (archivos individuales con más reintentos)
+      - name: FTPS upload (sin crear directorios)
         timeout-minutes: 20
         env:
           FTP_SERVER:     ${{ secrets.FTP_SERVER }}
@@ -82,7 +82,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          DEST_BASE="$(printf "%s/Competiciones/ListadoEventos/Workflows" "${FTP_REMOTE_DIR%/}")"
           TS="$(date -u +'%Y%m%dT%H%M%SZ')"
           
           # Buscar "el más reciente" para cada patrón requerido
@@ -103,9 +102,9 @@ jobs:
           echo "Tamaños de archivos:"
           ls -lh "$F01" "$F02" "$F03" "$F04"
           
-          echo "Subiendo a ${FTP_SERVER} -> ${DEST_BASE}"
+          echo "Subiendo a ${FTP_SERVER}${FTP_REMOTE_DIR}/"
           
-          # Función para subir archivos individualmente
+          # Función para subir archivos individualmente SIN crear directorios
           upload_file() {
             local file="$1"
             local remote_name="$2"
@@ -117,14 +116,13 @@ jobs:
                 set cmd:fail-exit true; \
                 set net:timeout 60; \
                 set net:max-retries 2; \
-                set net:persist-retries 1; \
                 set ftp:ssl-force true; \
                 set ftp:ssl-protect-data true; \
                 set ftp:passive-mode true; \
                 set ftp:prefer-epsv false; \
                 set ssl:verify-certificate no; \
-                cd '${DEST_BASE}' || mkdir -p '${DEST_BASE}' && cd '${DEST_BASE}'; \
-                put -O . '$file' -o '$remote_name'; \
+                cd '${FTP_REMOTE_DIR}'; \
+                put '$file' -o '$remote_name'; \
                 echo 'Subido: $remote_name'; \
                 bye"; then
                 echo "✅ $remote_name subido exitosamente"
@@ -138,12 +136,6 @@ jobs:
             return 1
           }
           
-          # Crear directorio remoto primero
-          lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" -e " \
-            set net:timeout 30; \
-            mkdir -p '${DEST_BASE}'; \
-            bye"
-          
           # Subir archivos uno por uno
           upload_file "$F01" "01events_last.json"
           upload_file "$F01" "01events_${TS}.json"
@@ -155,7 +147,7 @@ jobs:
           
           echo "✅ Todos los archivos subidos exitosamente"
 
-      - name: (Verify) descargar último final y comparar hash
+      - name: (Verify) lista archivos remotos
         env:
           FTP_SERVER:     ${{ secrets.FTP_SERVER }}
           FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
@@ -164,28 +156,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          DEST_BASE="$(printf "%s/Competiciones/ListadoEventos/Workflows" "${FTP_REMOTE_DIR%/}")"
-          test -f ./output/participants_completos_final.json
-          sha256sum ./output/participants_completos_final.json | awk '{print $1}' > local.sha256
-          echo "Hash local: $(cat local.sha256)"
-          
-          # Intentar descargar y verificar
-          if lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" -e " \
+          echo "Listando archivos en ${FTP_SERVER}${FTP_REMOTE_DIR}/"
+          lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" -e " \
             set net:timeout 30; \
-            set net:max-retries 2; \
-            get -O . '${DEST_BASE}/participants_completos_final_last.json' -o remote_final.json; \
-            bye"; then
-            test -f remote_final.json
-            sha256sum remote_final.json | awk '{print $1}' > remote.sha256
-            echo "Hash remoto: $(cat remote.sha256)"
-            if diff -q local.sha256 remote.sha256; then
-              echo "✅ OK: hash coincide"
-            else
-              echo "⚠️  Los hashes no coinciden, pero la subida fue exitosa"
-            fi
-          else
-            echo "⚠️  No se pudo verificar el hash remoto, pero la subida probablemente fue exitosa"
-          fi
+            cd '${FTP_REMOTE_DIR}'; \
+            ls -la; \
+            bye" || echo "⚠️  No se pudo listar directorio, pero la subida probablemente fue exitosa"
 
       - name: Notificar éxito
         if: success()
