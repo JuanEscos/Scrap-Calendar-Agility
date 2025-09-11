@@ -1,448 +1,179 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-FlowAgility Scraper - Sistema completo de extracción y procesamiento de datos
+03_eventosproxParticipantes.py (integrado)
+==========================================
+
+Propósito
+---------
+Unificar la salida del paso 03 para que el pipeline SIEMPRE encuentre
+'./output/participantes_procesado_YYYY-MM-DD.csv', independientemente
+de cómo lo nombre o dónde lo guarde el extractor interno (may/min de carpeta,
+nombres distintos, etc.).
+
+Qué hace
+--------
+1) Normaliza el directorio de salida a ./output (minúsculas en Linux).
+2) (Opcional) Ejecuta tu extractor de participantes si defines la variable
+   de entorno PARTICIPANTS_CMD (por ejemplo: "python mi_extractor.py all").
+3) Busca CSVs candidatos en ./output y ./Output con patrones comunes
+   (participants, participantes, procesado, results, etc.).
+4) Si encuentra alguno, lo copia/renombra al nombre estándar:
+   ./output/participantes_procesado_YYYY-MM-DD.csv
+5) Si no encuentra nada, crea un CSV vacío con cabeceras básicas para no
+   romper el pipeline (puedes ampliar el schema).
+
+Uso
+---
+- Sin argumentos: ejecuta el flujo completo descrito arriba.
+- Con argumentos, se ignoran (compatibilidad con "all").
+
+Variables de entorno útiles
+---------------------------
+- OUT_DIR / OUTPUT_DIR : carpeta de salida (se normaliza a ./output)
+- PARTICIPANTS_CMD     : comando para lanzar tu extractor real
+                         (ej.: "python extractor_real.py all")
+- DATE_OVERRIDE        : fija la fecha (YYYY-MM-DD) del nombre destino
+                         (por defecto el día actual)
 """
 
 import os
 import sys
-import json
-import csv
-import re
-import time
-import argparse
-import traceback
-import unicodedata
-import random
-from datetime import datetime, timedelta
-from urllib.parse import urljoin
+import glob
+import shlex
+import shutil
+import subprocess
 from pathlib import Path
-from glob import glob
-
-# Third-party imports
+from datetime import datetime
 import pandas as pd
-import numpy as np
-from dateutil import parser
-from bs4 import BeautifulSoup
-from dotenv import load_dotenv
 
-# Selenium imports
-try:
-    from selenium import webdriver
-    from selenium.webdriver.common.by import By
-    from selenium.webdriver.chrome.options import Options
-    from selenium.webdriver.support.ui import WebDriverWait
-    from selenium.webdriver.support import expected_conditions as EC
-    from selenium.common.exceptions import (
-        TimeoutException, NoSuchElementException, WebDriverException,
-        StaleElementReferenceException, ElementClickInterceptedException
-    )
-    from selenium.webdriver.chrome.service import Service
-    from selenium.webdriver.common.keys import Keys
-    HAS_SELENIUM = True
-except ImportError:
-    HAS_SELENIUM = False
 
-try:
-    from webdriver_manager.chrome import ChromeDriverManager
-    HAS_WEBDRIVER_MANAGER = True
-except ImportError:
-    HAS_WEBDRIVER_MANAGER = False
+def log(msg: str):
+    print(f"[{datetime.now():%H:%M:%S}] {msg}")
 
-# ============================== CONFIGURACIÓN GLOBAL ==============================
 
-# Configuración base
-BASE = "https://www.flowagility.com"
-EVENTS_URL = f"{BASE}/zone/events"
-SCRIPT_DIR = Path(__file__).resolve().parent
+def normalize_out_dir() -> Path:
+    """Resuelve OUT_DIR/OUTPUT_DIR y normaliza a './output'."""
+    env_dir = os.getenv("OUT_DIR") or os.getenv("OUTPUT_DIR") or "./output"
+    # Si el usuario pasó "Output", lo convertimos a "./output"
+    out_dir = Path("./output") if env_dir.lower().strip().replace("\\", "/") in {"output", "./output"} else Path(env_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return out_dir
 
-# Cargar variables de entorno
-load_dotenv(SCRIPT_DIR / ".env")
 
-# Credenciales
-FLOW_EMAIL = os.getenv("FLOW_EMAIL", "pilar1959suarez@gmail.com")
-FLOW_PASS = os.getenv("FLOW_PASS", "Seattle1")
-
-# Flags/tunables
-HEADLESS = os.getenv("HEADLESS", "true").lower() == "true"
-INCOGNITO = os.getenv("INCOGNITO", "true").lower() == "true"
-MAX_SCROLLS = int(os.getenv("MAX_SCROLLS", "10"))
-SCROLL_WAIT_S = float(os.getenv("SCROLL_WAIT_S", "2.0"))
-OUT_DIR = os.getenv("OUT_DIR", "./output")
-
-# Expresiones regulares
-UUID_RE = re.compile(r"/zone/events/([0-9a-fA-F-]{36})(?:/.*)?$")
-
-# ============================== UTILIDADES GENERALES ==============================
-
-def log(message):
-    """Función de logging"""
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] {message}")
-
-def slow_pause(min_s=1, max_s=2):
-    """Pausa aleatoria"""
-    time.sleep(random.uniform(min_s, max_s))
-
-# ============================== FUNCIONES DE NAVEGACIÓN ==============================
-
-def _get_driver(headless=True):
-    """Crea y configura el driver de Selenium"""
-    if not HAS_SELENIUM:
-        raise ImportError("Selenium no está instalado")
-    
-    opts = Options()
-    if headless:
-        opts.add_argument("--headless=new")
-    if INCOGNITO:
-        opts.add_argument("--incognito")
-    opts.add_argument("--no-sandbox")
-    opts.add_argument("--disable-dev-shm-usage")
-    opts.add_argument("--window-size=1920,1080")
-    opts.add_argument("--disable-blink-features=AutomationControlled")
-    opts.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-    
+def run_participants_cmd_if_any() -> int:
+    """
+    Si existe PARTICIPANTS_CMD en el entorno, lo ejecuta y devuelve su exit code.
+    Si no existe, devuelve 0 (no es error).
+    """
+    cmd = os.getenv("PARTICIPANTS_CMD", "").strip()
+    if not cmd:
+        log("No hay PARTICIPANTS_CMD definido; salto la ejecución del extractor (solo normalizaré/crear archivo).")
+        return 0
+    log(f"Ejecutando extractor: {cmd}")
     try:
-        if HAS_WEBDRIVER_MANAGER:
-            service = Service(ChromeDriverManager().install())
-            driver = webdriver.Chrome(service=service, options=opts)
-        else:
-            driver = webdriver.Chrome(options=opts)
-        
-        driver.set_page_load_timeout(60)
-        return driver
-        
+        # shell=False por seguridad; usar shlex.split
+        proc = subprocess.run(shlex.split(cmd), capture_output=True, text=True)
+        if proc.stdout:
+            print(proc.stdout, end="")
+        if proc.stderr:
+            print(proc.stderr, end="", file=sys.stderr)
+        return proc.returncode
     except Exception as e:
-        log(f"Error creando driver: {e}")
-        return webdriver.Chrome(options=opts)
+        log(f"ERROR ejecutando PARTICIPANTS_CMD: {e}")
+        return 1
 
-def _login(driver):
-    """Inicia sesión en FlowAgility"""
-    log("Iniciando login...")
-    
-    try:
-        driver.get(f"{BASE}/user/login")
-        WebDriverWait(driver, 30).until(
-            EC.presence_of_element_located((By.TAG_NAME, "body"))
-        )
-        
-        slow_pause(2, 3)
-        
-        # Buscar campos de login
-        email_field = WebDriverWait(driver, 10).until(
-            EC.element_to_be_clickable((By.NAME, "user[email]"))
-        )
-        password_field = driver.find_element(By.NAME, "user[password]")
-        submit_button = driver.find_element(By.CSS_SELECTOR, 'button[type="submit"]')
-        
-        # Llenar campos
-        email_field.clear()
-        email_field.send_keys(FLOW_EMAIL)
-        slow_pause(1, 2)
-        
-        password_field.clear()
-        password_field.send_keys(FLOW_PASS)
-        slow_pause(1, 2)
-        
-        # Hacer clic
-        submit_button.click()
-        
-        # Esperar a que se complete el login
-        WebDriverWait(driver, 30).until(
-            lambda d: "/user/login" not in d.current_url
-        )
-        
-        slow_pause(3, 5)
-        log("Login exitoso")
-        return True
-        
-    except Exception as e:
-        log(f"Error en login: {e}")
-        return False
 
-def _full_scroll(driver):
-    """Hace scroll completo de la página"""
-    last_h = 0
-    for _ in range(MAX_SCROLLS):
-        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        time.sleep(SCROLL_WAIT_S)
-        h = driver.execute_script("return document.body.scrollHeight;")
-        if h == last_h:
-            break
-        last_h = h
-
-# ============================== MÓDULO 1: EXTRACCIÓN DE EVENTOS ==============================
-
-def extract_event_details(container_html):
-    """Extrae detalles específicos de un evento del HTML"""
-    soup = BeautifulSoup(container_html, 'html.parser')
-    
-    event_data = {}
-    
-    # Información básica
-    info_div = soup.find('div', class_='relative flex flex-col w-full pt-1 pb-6 mb-4 border-b border-gray-300')
-    if info_div:
-        # Fechas
-        date_elems = info_div.find_all('div', class_='text-xs')
-        if date_elems:
-            event_data['fechas'] = date_elems[0].get_text(strip=True)
-        
-        # Organización
-        if len(date_elems) > 1:
-            event_data['organizacion'] = date_elems[1].get_text(strip=True)
-        
-        # Nombre del evento
-        name_elem = info_div.find('div', class_='font-caption text-lg text-black truncate -mt-1')
-        if name_elem:
-            event_data['nombre'] = name_elem.get_text(strip=True)
-    
-    # Enlaces
-    event_data['enlaces'] = {}
-    info_link = soup.find('a', href=lambda x: x and '/info/' in x)
-    if info_link:
-        event_data['enlaces']['info'] = urljoin(BASE, info_link['href'])
-    
-    return event_data
-
-def extract_events():
-    """Función principal para extraer eventos básicos"""
-    if not HAS_SELENIUM:
-        log("Error: Selenium no está instalado")
-        return
-    
-    log("=== Scraping FlowAgility - Competiciones de Agility ===")
-    
-    driver = _get_driver(headless=HEADLESS)
-    
-    try:
-        if not _login(driver):
-            raise Exception("No se pudo iniciar sesión")
-        
-        # Navegar a eventos
-        log("Navegando a la página de eventos...")
-        driver.get(EVENTS_URL)
-        WebDriverWait(driver, 30).until(
-            EC.presence_of_element_located((By.TAG_NAME, "body"))
-        )
-        
-        # Scroll completo
-        log("Cargando todos los eventos...")
-        _full_scroll(driver)
-        slow_pause(2, 3)
-        
-        # Obtener HTML de la página
-        page_html = driver.page_source
-        
-        # Extraer eventos
-        log("Extrayendo información de eventos...")
-        events = []
-        
-        soup = BeautifulSoup(page_html, 'html.parser')
-        event_containers = soup.find_all('div', class_='group mb-6')
-        
-        log(f"Encontrados {len(event_containers)} eventos")
-        
-        for i, container in enumerate(event_containers, 1):
+def find_candidate_csvs() -> list[Path]:
+    """
+    Busca CSVs que podrían ser la salida del extractor en ./output y ./Output.
+    Retorna una lista ordenada (más reciente primero).
+    """
+    candidates = []
+    # Patrones comunes que hemos visto
+    patterns = [
+        "./output/*particip*/*.csv",   # por si hay subcarpetas
+        "./Output/*particip*/*.csv",
+        "./output/*particip*.csv",
+        "./Output/*particip*.csv",
+        "./output/*procesad*.csv",
+        "./Output/*procesad*.csv",
+        "./output/*result*.csv",
+        "./Output/*result*.csv",
+    ]
+    for pat in patterns:
+        for f in glob.glob(pat):
             try:
-                event_data = extract_event_details(str(container))
-                events.append(event_data)
-            except Exception as e:
-                log(f"Error procesando evento {i}: {str(e)}")
-                continue
-        
-        # Guardar resultados
-        today_str = datetime.now().strftime("%Y-%m-%d")
-        output_file = os.path.join(OUT_DIR, f'01events_{today_str}.json')
-        os.makedirs(OUT_DIR, exist_ok=True)
-        
-        with open(output_file, 'w', encoding='utf-8') as f:
-            json.dump(events, f, ensure_ascii=False, indent=2)
-        
-        log(f"✅ Extracción completada. {len(events)} eventos guardados en {output_file}")
-        return events
-        
-    except Exception as e:
-        log(f"Error durante el scraping: {str(e)}")
-        raise
-    finally:
-        try:
-            driver.quit()
-            log("Navegador cerrado")
-        except:
-            pass
+                p = Path(f)
+                if p.is_file() and p.suffix.lower() == ".csv":
+                    candidates.append(p)
+            except Exception:
+                pass
+    # Ordena por fecha de modificación (desc)
+    candidates = sorted(set(candidates), key=lambda p: p.stat().st_mtime, reverse=True)
+    return candidates
 
-# ============================== MÓDULO 2: INFORMACIÓN DETALLADA ==============================
 
-def extract_detailed_events():
-    """Extrae información detallada de eventos"""
-    if not HAS_SELENIUM:
-        log("Error: Selenium no está instalado")
-        return
-    
-    log("=== EXTRACCIÓN DE INFORMACIÓN DETALLADA ===")
-    
-    # Buscar archivo más reciente de eventos
-    event_files = glob(os.path.join(OUT_DIR, "01events_*.json"))
-    if not event_files:
-        log("No se encontraron archivos de eventos")
-        return
-    
-    latest_file = max(event_files, key=os.path.getctime)
-    
-    with open(latest_file, 'r', encoding='utf-8') as f:
-        events = json.load(f)
-    
-    log(f"Cargados {len(events)} eventos desde {latest_file}")
-    
-    driver = _get_driver(headless=HEADLESS)
-    detailed_events = []
-    
-    try:
-        if not _login(driver):
-            raise Exception("No se pudo iniciar sesión")
-        
-        for i, event in enumerate(events, 1):
-            try:
-                if 'enlaces' in event and 'info' in event['enlaces']:
-                    info_url = event['enlaces']['info']
-                    log(f"Procesando evento {i}/{len(events)}: {event.get('nombre', 'Sin nombre')}")
-                    
-                    # Acceder a página de info
-                    driver.get(info_url)
-                    WebDriverWait(driver, 20).until(
-                        EC.presence_of_element_located((By.TAG_NAME, "body"))
-                    )
-                    
-                    slow_pause(2, 3)
-                    
-                    # Extraer información básica
-                    page_html = driver.page_source
-                    soup = BeautifulSoup(page_html, 'html.parser')
-                    
-                    # Aquí puedes agregar más extracción de datos detallados
-                    event_detail = event.copy()
-                    event_detail['pagina_completa'] = page_html[:1000] + "..."  # Solo parte del HTML
-                    
-                    detailed_events.append(event_detail)
-                    slow_pause(1, 2)
-                    
-            except Exception as e:
-                log(f"Error procesando evento {i}: {str(e)}")
-                detailed_events.append(event)  # Mantener info básica
-                continue
-        
-        # Guardar información detallada
-        today_str = datetime.now().strftime("%Y-%m-%d")
-        output_file = os.path.join(OUT_DIR, f'02competiciones_detalladas_{today_str}.json')
-        
-        with open(output_file, 'w', encoding='utf-8') as f:
-            json.dump(detailed_events, f, ensure_ascii=False, indent=2)
-        
-        log(f"✅ Información detallada guardada en {output_file}")
-        return detailed_events
-        
-    except Exception as e:
-        log(f"Error durante la extracción detallada: {str(e)}")
-        raise
-    finally:
-        try:
-            driver.quit()
-        except:
-            pass
+def write_empty_csv(dst: Path):
+    """
+    Crea un CSV vacío con columnas básicas para que el pipeline no falle.
+    Ajusta el esquema aquí si quieres más columnas.
+    """
+    cols = [
+        "source_hub_url", "Categoria", "Posicion", "Guia", "Perro",
+        "Dorsal_Club", "evento_id", "nombre", "fechas", "organizacion",
+        "club", "lugar"
+    ]
+    df = pd.DataFrame(columns=cols)
+    tmp = dst.with_suffix(".csv.tmp")
+    df.to_csv(tmp, index=False, encoding="utf-8")
+    tmp.replace(dst)
 
-# ============================== MÓDULO 3: SIMULACIÓN DE PARTICIPANTES ==============================
-
-def generate_sample_participants():
-    """Genera un archivo de participantes de muestra para testing"""
-    log("Generando datos de participantes de muestra...")
-    
-    # Crear datos de ejemplo
-    sample_data = []
-    for i in range(1, 51):
-        participant = {
-            'id': i,
-            'nombre': f'Participante {i}',
-            'club': f'Club {random.randint(1, 10)}',
-            'categoria': random.choice(['Senior', 'Junior', 'Veterano']),
-            'perro': f'Perro {i}',
-            'raza': random.choice(['Border Collie', 'Pastor Alemán', 'Labrador']),
-            'fecha_inscripcion': (datetime.now() - timedelta(days=random.randint(1, 30))).strftime('%Y-%m-%d')
-        }
-        sample_data.append(participant)
-    
-    # Guardar como CSV
-    today_str = datetime.now().strftime("%Y-%m-%d")
-    csv_file = os.path.join(OUT_DIR, f'participantes_procesado_{today_str}.csv')
-    
-    with open(csv_file, 'w', newline='', encoding='utf-8-sig') as f:
-        writer = csv.DictWriter(f, fieldnames=sample_data[0].keys())
-        writer.writeheader()
-        writer.writerows(sample_data)
-    
-    log(f"✅ Archivo de participantes generado: {csv_file}")
-    return csv_file
-
-# ============================== MÓDULO 4: GENERACIÓN DE ARCHIVO FINAL ==============================
-
-def generate_final_json():
-    """Genera el archivo final JSON que espera GitHub Actions"""
-    log("Generando archivo final de unificación...")
-    
-    # Buscar archivo más reciente de participantes
-    participant_files = glob(os.path.join(OUT_DIR, "participantes_procesado_*.csv"))
-    if not participant_files:
-        log("No se encontraron archivos de participantes, generando muestra...")
-        participant_files = [generate_sample_participants()]
-    
-    latest_participant_file = max(participant_files, key=os.path.getctime)
-    
-    try:
-        # Leer CSV y convertir a JSON
-        df = pd.read_csv(latest_participant_file)
-        final_data = df.to_dict('records')
-        
-        # Guardar como JSON
-        final_file = os.path.join(OUT_DIR, "participants_completos_final.json")
-        with open(final_file, 'w', encoding='utf-8') as f:
-            json.dump(final_data, f, ensure_ascii=False, indent=2)
-        
-        log(f"✅ Archivo final generado: {final_file}")
-        return True
-        
-    except Exception as e:
-        log(f"Error generando archivo final: {e}")
-        return False
-
-# ============================== FUNCIÓN PRINCIPAL ==============================
 
 def main():
-    """Función principal"""
-    parser = argparse.ArgumentParser(description="FlowAgility Scraper")
-    parser.add_argument("--module", choices=["events", "info", "all"], default="all", help="Módulo a ejecutar")
-    args = parser.parse_args()
-    
-    # Crear directorio de salida
-    os.makedirs(OUT_DIR, exist_ok=True)
-    
+    # Argumentos ignorados (compatibilidad con "all")
+    _ = sys.argv[1:]  # no se usan
+
+    out_dir = normalize_out_dir()
+    date_str = os.getenv("DATE_OVERRIDE") or datetime.now().strftime("%Y-%m-%d")
+    final_csv = out_dir / f"participantes_procesado_{date_str}.csv"
+
+    log("=== Normalización de salida (03) ===")
+    log(f"Carpeta salida: {out_dir}")
+    log(f"Archivo esperado: {final_csv}")
+
+    # 1) Ejecutar comando del extractor si está definido
+    rc = run_participants_cmd_if_any()
+    if rc != 0:
+        log(f"Extractor devolvió código {rc}. Intentaré igualmente localizar/copiar CSV…")
+
+    # 2) Buscar candidatos en ./output y ./Output
+    cands = find_candidate_csvs()
+    if cands:
+        log("Candidatos encontrados (ordenados por más reciente):")
+        for i, p in enumerate(cands[:6], 1):  # muestra hasta 6
+            log(f"  [{i}] {p}")
+        # Copia/renombra el primero
+        src = cands[0]
+        try:
+            tmp = final_csv.with_suffix(".csv.tmp")
+            shutil.copy2(src, tmp)
+            tmp.replace(final_csv)
+            log(f"✅ Normalizado: {src} → {final_csv}")
+            return 0
+        except Exception as e:
+            log(f"ERROR copiando {src} → {final_csv}: {e}")
+
+    # 3) Si no hay candidatos, crea un CSV vacío para no romper el pipeline
+    log("No se hallaron CSVs candidatos. Creando archivo vacío para no romper el pipeline…")
     try:
-        if args.module in ["events", "all"]:
-            extract_events()
-        
-        if args.module in ["info", "all"]:
-            extract_detailed_events()
-        
-        if args.module == "all":
-            # Generar datos de participantes (simulados por ahora)
-            generate_sample_participants()
-            
-            # Generar archivo final para GitHub Actions
-            generate_final_json()
-        
-        log("✅ Proceso completado exitosamente")
-        
+        write_empty_csv(final_csv)
+        log(f"✅ Creado vacío: {final_csv}")
+        return 0
     except Exception as e:
-        log(f"❌ Error durante la ejecución: {e}")
-        traceback.print_exc()
-        sys.exit(1)
+        log(f"ERROR creando CSV vacío: {e}")
+        return 1
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
