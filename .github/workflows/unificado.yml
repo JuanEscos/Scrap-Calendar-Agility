@@ -3,8 +3,8 @@ name: Scrape & Upload (FlowAgility)GPT
 on:
   workflow_dispatch:
   schedule:
-    # 06:05 Madrid time daily
-    - cron: "05 04 * * *"  # UTC (Europe/Madrid is UTC+2 in Sep)
+    # 06:05 Madrid ≈ 04:05 UTC (ajusta si quieres)
+    - cron: "05 04 * * *"
 
 env:
   TZ: Europe/Madrid
@@ -15,10 +15,6 @@ env:
   LIMIT_EVENTS: "0"
   LIMIT_PARTICIPANTS: "0"
 
-concurrency:
-  group: scrape-upload
-  cancel-in-progress: false
-
 jobs:
   run-scrape:
     runs-on: ubuntu-24.04
@@ -26,7 +22,7 @@ jobs:
 
     steps:
       - name: Checkout
-      uses: actions/checkout@v4
+        uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -53,9 +49,9 @@ jobs:
 
       - name: Show environment
         run: |
-          echo "[${TZ}] HEADLESS=$HEADLESS"
-          echo "[${TZ}] LIMIT_EVENTS=$LIMIT_EVENTS"
-          echo "[${TZ}] LIMIT_PARTICIPANTS=$LIMIT_PARTICIPANTS"
+          echo "HEADLESS=${HEADLESS}"
+          echo "LIMIT_EVENTS=${LIMIT_EVENTS}"
+          echo "LIMIT_PARTICIPANTS=${LIMIT_PARTICIPANTS}"
 
       - name: Run 01 (eventos prox)
         env:
@@ -75,15 +71,12 @@ jobs:
           python 02_eventosproxINFO.py ./output/01events_last.json ./output/02competiciones_detalladas.json
           ls -lah ./output || true
 
-      # IMPORTANTE:
-      # Este paso asume que tu 03 es el "integrador" que ya te pasé:
-      # - deja SIEMPRE ./output/participantes_procesado_YYYY-MM-DD.csv
-      #   (o crea uno vacío si no hay datos) para no romper el pipeline
+      # Este 03 es el integrador que deja siempre participantes_procesado_YYYY-MM-DD.csv
       - name: Run 03 (participants integrator)
         env:
           OUT_DIR: ./output
           OUTPUT_DIR: ./output
-          # Si tienes extractor propio: descomenta la siguiente línea
+          # Si tienes extractor propio, descomenta:
           # PARTICIPANTS_CMD: "python mi_extractor_participantes.py all"
         run: |
           set -e
@@ -116,10 +109,6 @@ jobs:
           TS="$(date -u +'%Y%m%dT%H%M%SZ')"
           DEST_BASE="$(printf "%s/Competiciones/ListadoEventos/Workflows" "${FTP_REMOTE_DIR%/}")"
 
-          echo "[INFO] OUT_DIR=${OUT_DIR}"
-          echo "[INFO] TS=${TS}"
-          echo "[INFO] DEST_BASE=${DEST_BASE}"
-
           one_or_fail() {
             local pat="$1"
             local f
@@ -135,17 +124,10 @@ jobs:
             ls -1t "${OUT_DIR%/}/${pat}" 2>/dev/null | head -n1 || true
           }
 
-          # Requeridos
           F01=$(one_or_fail "01events_*.json")
           F02=$(one_or_fail "02competiciones_detalladas_*.json")
-          # Opcionales
           F03=$(one_or_none "participantes_procesado_*.csv")
           F04=$(one_or_none "participants_completos_final*.json")
-
-          echo "[INFO] F01=${F01}"
-          echo "[INFO] F02=${F02}"
-          [[ -n "${F03:-}" ]] && echo "[INFO] F03=${F03}" || echo "::warning::F03 no encontrado (opcional)"
-          [[ -n "${F04:-}" ]] && echo "[INFO] F04=${F04}" || echo "::warning::F04 no encontrado (opcional)"
 
           LFTP_CMDS="
           set cmd:fail-exit true;
@@ -186,6 +168,4 @@ jobs:
           echo 'Contenido destino:'; pwd; cls -l;
           bye"
 
-          echo "[INFO] Conectando y subiendo a ${FTP_SERVER} -> ${DEST_BASE}"
           lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" -e "${LFTP_CMDS}"
-          echo "[INFO] Subida completada."
