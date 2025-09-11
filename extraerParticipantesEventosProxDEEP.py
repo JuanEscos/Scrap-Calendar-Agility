@@ -72,6 +72,11 @@ OUT_DIR = os.getenv("OUT_DIR", "./output")
 
 # Expresiones regulares
 UUID_RE = re.compile(r"/zone/events/([0-9a-fA-F-]{36})(?:/.*)?$")
+EMOJI_RE = re.compile(
+    "[\U0001F1E6-\U0001F1FF\U0001F300-\U0001F5FF\U0001F600-\U0001F64F\U0001F680-\U0001F6FF"
+    "\U0001F700-\U0001F77F\U0001F780-\U0001F7FF\U0001F800-\U0001F8FF\U0001F900-\U0001F9FF"
+    "\U0001FA00-\U0001FA6F\U0001FA70-\U0001FAFF\U00002700-\U000027BF\U00002600-\U000026FF]+"
+)
 
 # ============================== UTILIDADES GENERALES ==============================
 
@@ -82,6 +87,15 @@ def log(message):
 def slow_pause(min_s=1, max_s=2):
     """Pausa aleatoria"""
     time.sleep(random.uniform(min_s, max_s))
+
+def _clean(s: str) -> str:
+    """Limpia y normaliza texto"""
+    if not s:
+        return ""
+    s = unicodedata.normalize("NFKC", s)
+    s = EMOJI_RE.sub("", s)
+    s = re.sub(r"[ \t]+", " ", s)
+    return s.strip(" \t\r\n-•*·:;")
 
 # ============================== FUNCIONES DE NAVEGACIÓN ==============================
 
@@ -170,13 +184,27 @@ def _full_scroll(driver):
             break
         last_h = h
 
-# ============================== MÓDULO 1: EXTRACCIÓN DE EVENTOS ==============================
+# ============================== MÓDULO 1: EXTRACCIÓN DE EVENTOS (MEJORADO) ==============================
 
 def extract_event_details(container_html):
-    """Extrae detalles específicos de un evento del HTML"""
+    """Extrae detalles específicos de un evento del HTML - VERSIÓN MEJORADA"""
     soup = BeautifulSoup(container_html, 'html.parser')
     
     event_data = {}
+    
+    # ID del evento (UUID)
+    event_container = soup.find('div', class_='group mb-6')
+    if event_container:
+        event_data['id'] = event_container.get('id', '')
+        # También buscar UUID en enlaces
+        links = event_container.find_all('a', href=True)
+        for link in links:
+            href = link['href']
+            if '/zone/events/' in href:
+                match = UUID_RE.search(href)
+                if match:
+                    event_data['id'] = match.group(1)
+                    break
     
     # Información básica
     info_div = soup.find('div', class_='relative flex flex-col w-full pt-1 pb-6 mb-4 border-b border-gray-300')
@@ -194,12 +222,79 @@ def extract_event_details(container_html):
         name_elem = info_div.find('div', class_='font-caption text-lg text-black truncate -mt-1')
         if name_elem:
             event_data['nombre'] = name_elem.get_text(strip=True)
+        
+        # Club organizador
+        club_elem = info_div.find('div', class_='text-xs mb-0.5 mt-0.5')
+        if club_elem:
+            event_data['club'] = club_elem.get_text(strip=True)
+        
+        # Lugar - buscar en todos los divs con text-xs
+        location_divs = info_div.find_all('div', class_='text-xs')
+        for div in location_divs:
+            text = div.get_text(strip=True)
+            if '/' in text and ('Spain' in text or 'España' in text):
+                event_data['lugar'] = text
+                break
     
-    # Enlaces
+    # Estado del evento
+    status_button = soup.find('div', class_='py-1 px-4 border text-white font-bold rounded text-sm')
+    if status_button:
+        event_data['estado'] = status_button.get_text(strip=True)
+        # Determinar tipo de estado
+        status_text = event_data['estado'].lower()
+        if 'inscribirse' in status_text or 'inscrip' in status_text:
+            event_data['estado_tipo'] = 'inscripcion_abierta'
+        elif 'en curso' in status_text or 'curso' in status_text:
+            event_data['estado_tipo'] = 'en_curso'
+        elif 'finaliz' in status_text or 'complet' in status_text:
+            event_data['estado_tipo'] = 'finalizado'
+        else:
+            event_data['estado_tipo'] = 'desconocido'
+    
+    # Enlaces (INFO y PARTICIPANTES)
     event_data['enlaces'] = {}
+    
+    # Enlace de INFO
     info_link = soup.find('a', href=lambda x: x and '/info/' in x)
     if info_link:
         event_data['enlaces']['info'] = urljoin(BASE, info_link['href'])
+    
+    # Enlace de PARTICIPANTES - buscar en todos los enlaces
+    all_links = soup.find_all('a', href=True)
+    for link in all_links:
+        href = link['href']
+        if '/participants_list' in href or '/participants' in href:
+            event_data['enlaces']['participantes'] = urljoin(BASE, href)
+            break
+    
+    # Si no encontramos enlace de participantes, construirlo desde el ID
+    if 'participantes' not in event_data['enlaces'] and 'id' in event_data:
+        event_data['enlaces']['participantes'] = f"{BASE}/zone/events/{event_data['id']}/participants_list"
+    
+    # Bandera del país
+    flag_div = soup.find('div', class_='text-md')
+    if flag_div:
+        event_data['pais_bandera'] = flag_div.get_text(strip=True)
+    else:
+        # Intentar detectar bandera por texto
+        if 'lugar' in event_data:
+            lugar = event_data['lugar'].lower()
+            if 'spain' in lugar or 'españa' in lugar:
+                event_data['pais_bandera'] = '🇪🇸'
+            elif 'france' in lugar or 'francia' in lugar:
+                event_data['pais_bandera'] = '🇫🇷'
+            elif 'portugal' in lugar:
+                event_data['pais_bandera'] = '🇵🇹'
+            elif 'italy' in lugar or 'italia' in lugar:
+                event_data['pais_bandera'] = '🇮🇹'
+            elif 'germany' in lugar or 'alemania' in lugar:
+                event_data['pais_bandera'] = '🇩🇪'
+    
+    # Limpiar campos de texto
+    text_fields = ['fechas', 'organizacion', 'nombre', 'club', 'lugar', 'estado', 'pais_bandera']
+    for field in text_fields:
+        if field in event_data:
+            event_data[field] = _clean(event_data[field])
     
     return event_data
 
@@ -245,6 +340,7 @@ def extract_events():
             try:
                 event_data = extract_event_details(str(container))
                 events.append(event_data)
+                log(f"Procesado evento {i}/{len(event_containers)}: {event_data.get('nombre', 'Sin nombre')}")
             except Exception as e:
                 log(f"Error procesando evento {i}: {str(e)}")
                 continue
