@@ -93,16 +93,28 @@ def latest_of(pattern: str) -> Path | None:
     files = sorted(OUT.glob(pattern), key=lambda p: p.stat().st_mtime)
     return files[-1] if files else None
 
+def latest_of_many(patterns) -> Path | None:
+    files = []
+    for pat in patterns:
+        files.extend(list(OUT.glob(pat)))
+    if not files:
+        return None
+    files = sorted(set(files), key=lambda p: p.stat().st_mtime)
+    return files[-1]
+
+def list_output_dir():
+    print("── Contenido de ./output ──")
+    for p in sorted(OUT.glob("*")):
+        try:
+            print(f" - {p.name:40s}  {p.stat().st_size} bytes")
+        except Exception:
+            print(f" - {p.name}")
+    print("───────────────────────────")
+
 # -------------------------
 # Paso 01: eventos base
 # -------------------------
 def step_01(timeout_sec=12*60):
-    """
-    Lanza 01_eventosprox.py y normaliza a:
-      - output/01events_YYYY-MM-DD.json
-      - output/01events_last.json
-    Acepta también el caso en el que 01 saque ./output/events.json
-    """
     run_py("01_eventosprox.py", timeout_sec=timeout_sec)
 
     # Detectar salida del 01
@@ -129,12 +141,6 @@ def step_01(timeout_sec=12*60):
 # Paso 02: info detallada
 # -------------------------
 def step_02(timeout_sec=25*60):
-    """
-    Lanza 02_eventosproxINFO.py con IN=01events_last.json y OUT=02competiciones_detalladas.json
-    y normaliza a:
-      - 02competiciones_detalladas_YYYY-MM-DD.json
-      - 02info_last.json (copia canónica)
-    """
     in_events = first_existing(OUT / "01events_last.json", OUT / "01events.json")
     if not in_events:
         raise FileNotFoundError("Falta 01events_last.json para 02")
@@ -161,38 +167,47 @@ def step_02(timeout_sec=25*60):
 # -------------------------
 def step_03(timeout_sec=60*60):
     """
-    Lanza 03_eventosproxParticipantes.py modo 'all' (scrape + process).
-    Verifica y deja:
-      - output/03events_YYYY-MM-DD.csv (si tu 03 lo genera)
-      - output/03participantes_YYYY-MM-DD.csv (si tu 03 lo genera)
-      - output/participantes_procesado_YYYY-MM-DD.csv (OBLIGATORIO)
-      - y snapshots JSON si los saca (03participantes_YYYY-MM-DD.json / 03participantes.json)
+    Ejecuta 03 (all) y busca el CSV procesado con patrones amplios.
+    Acepta:
+      - participantes_procesado_YYYY-MM-DD.csv  (preferido)
+      - participantes_procesado*.csv            (cualquier fecha)
+      - *participantes_procesado*.csv           (por si el prefijo cambia)
     """
-    # Pasamos HEADLESS/LIMIT_* al subproceso via env heredado
     run_py("03_eventosproxParticipantes.py", args=["all"], timeout_sec=timeout_sec)
 
-    # Buscar el CSV procesado del día, si no, el último disponible
-    proc_today = latest_of(f"participantes_procesado_{DATE_STR}.csv")
-    if not proc_today:
-        # último cualquiera
-        proc_today = latest_of("participantes_procesado_*.csv")
-    if not proc_today:
-        raise FileNotFoundError("03 no generó participantes_procesado_*.csv")
+    # Debug: listar output tras 03
+    list_output_dir()
 
-    log(f"OK 03 -> {proc_today.name}")
+    # Preferido: del día
+    candidates_preferred = [
+        f"participantes_procesado_{DATE_STR}.csv",
+    ]
+    found = latest_of_many(candidates_preferred)
+    if not found:
+        # Cualquier fecha / prefijo
+        candidates_fallback = [
+            "participantes_procesado_*.csv",
+            "*participantes_procesado*.csv",
+        ]
+        found = latest_of_many(candidates_fallback)
+
+    if not found:
+        raise FileNotFoundError(
+            "03 no generó participantes_procesado_*.csv. "
+            "Revisa los nombres en ./output (arriba se listó su contenido). "
+            "Si el script 03 escribe en otra carpeta, ajusta OUT_DIR o mueve el archivo a ./output."
+        )
+
+    # Añade un alias "latest" si quieres
+    latest_alias = OUT / "participantes_procesado_latest.csv"
+    shutil.copy2(found, latest_alias)
+    log(f"OK 03 -> {found.name} (alias: {latest_alias.name})")
 
 # -------------------------
 # Paso 04: unión final
 # -------------------------
 def step_04(timeout_sec=5*60):
-    """
-    Lanza 04_eventosproxUnionBeta.py para crear:
-      - output/participants_completos_final.json
-    Toma como IN la propia carpeta ./output (el script 04 detecta el mejor input).
-    """
     final_out = OUT / "participants_completos_final.json"
-    # Usa la versión Beta que compartiste
-    # Arg1: entrada (fichero o carpeta)  Arg2: salida final JSON
     run_py("04_eventosproxUnionBeta.py", args=[str(OUT), str(final_out)], timeout_sec=timeout_sec)
 
     if not final_out.exists():
@@ -211,6 +226,7 @@ def print_summary():
         f"02competiciones_detalladas_{DATE_STR}.json",
         "02info_last.json",
         f"participantes_procesado_{DATE_STR}.csv",
+        "participantes_procesado_latest.csv",
         "participants_completos_final.json",
         f"03events_{DATE_STR}.csv",
         f"03participantes_{DATE_STR}.csv",
@@ -238,7 +254,6 @@ def main():
         if which in ("all", "01"):
             step_01()
         if which in ("all", "02"):
-            # Si sólo se lanza 02, asegúrate de que 01events exista (por diseño)
             if which == "02" and not (OUT / "01events_last.json").exists():
                 raise SystemExit("Para 02 necesitas 01events_last.json en ./output")
             step_02()
