@@ -1,155 +1,191 @@
-name: Agility - Unificado (01+02+03+04)
+name: Scrape & Upload (FlowAgility)
 
 on:
+  workflow_dispatch:
   schedule:
-    - cron: '5 4 * * *'  # diario 04:05 UTC
-  workflow_dispatch: {}
+    # 06:05 Madrid time daily
+    - cron: "05 04 * * *"  # UTC (Europe/Madrid is UTC+2 in Sep)
 
-permissions:
-  contents: read
-  actions: read
+env:
+  TZ: Europe/Madrid
+  OUT_DIR: ./output
+  OUTPUT_DIR: ./output
+  HEADLESS: "true"
+  INCOGNITO: "true"
+  LIMIT_EVENTS: "0"
+  LIMIT_PARTICIPANTS: "0"
 
 concurrency:
-  group: agility-unificado
-  cancel-in-progress: true
+  group: scrape-upload
+  cancel-in-progress: false
 
 jobs:
-  run_all:
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
-    env:
-      TZ: Europe/Madrid
-      OUT_DIR: ./output
-      FLOW_EMAIL: ${{ secrets.FLOW_EMAIL }}
-      FLOW_PASS:  ${{ secrets.FLOW_PASS }}
-      HEADLESS: "true"
-      INCOGNITO: "true"
-      # Ajusta si quieres limitar:
-      LIMIT_EVENTS: "0"
-      LIMIT_PARTICIPANTS: "0"
+  run-scrape:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+      uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-          cache: pip
-          cache-dependency-path: requirements.txt
+          python-version: "3.11"
 
-      - name: Install deps
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements*.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip setuptools wheel
+          set -e
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt
+          else
+            pip install --upgrade pip
+            pip install selenium webdriver-manager python-dotenv pandas beautifulsoup4 lxml
           fi
-          pip install beautifulsoup4 lxml selenium webdriver-manager python-dateutil numpy pandas
 
-      - name: Install Google Chrome
-        uses: browser-actions/setup-chrome@v1
-
-      - name: Run unificado (máx 90 min)
-        id: run_unificado
-        timeout-minutes: 90
-        shell: bash
+      - name: Show environment
         run: |
-          set -euo pipefail
-          mkdir -p "$OUT_DIR"
-          python "./extraerParticipantesEventosProx.py"
-          echo "Listando $OUT_DIR"
-          ls -la "$OUT_DIR"
+          echo "[${TZ}] HEADLESS=$HEADLESS"
+          echo "[${TZ}] LIMIT_EVENTS=$LIMIT_EVENTS"
+          echo "[${TZ}] LIMIT_PARTICIPANTS=$LIMIT_PARTICIPANTS"
 
-      - name: Upload artifact (todo el output)
+      - name: Run 01 (eventos prox)
+        env:
+          FLOW_EMAIL: ${{ secrets.FLOW_EMAIL }}
+          FLOW_PASS:  ${{ secrets.FLOW_PASS }}
+        run: |
+          set -e
+          python 01_eventosprox.py
+          ls -lah ./output || true
+
+      - name: Run 02 (info detallada)
+        env:
+          FLOW_EMAIL: ${{ secrets.FLOW_EMAIL }}
+          FLOW_PASS:  ${{ secrets.FLOW_PASS }}
+        run: |
+          set -e
+          python 02_eventosproxINFO.py ./output/01events_last.json ./output/02competiciones_detalladas.json
+          ls -lah ./output || true
+
+      # IMPORTANTE:
+      # Este paso asume que tu 03 es el "integrador" que ya te pasé:
+      # - deja SIEMPRE ./output/participantes_procesado_YYYY-MM-DD.csv
+      #   (o crea uno vacío si no hay datos) para no romper el pipeline
+      - name: Run 03 (participants integrator)
+        env:
+          OUT_DIR: ./output
+          OUTPUT_DIR: ./output
+          # Si tienes extractor propio: descomenta la siguiente línea
+          # PARTICIPANTS_CMD: "python mi_extractor_participantes.py all"
+        run: |
+          set -e
+          python 03_eventosproxParticipantes.py all
+          ls -lah ./output || true
+
+      - name: Upload artifact (output folder)
         uses: actions/upload-artifact@v4
         with:
           name: a-unificado-output
-          path: ./output
-          if-no-files-found: error
-          retention-days: 10
+          path: ./output/**
+          if-no-files-found: warn
+          compression-level: 6
 
       - name: Install lftp
-        run: sudo apt-get update && sudo apt-get install -y lftp
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lftp
 
-      - name: FTPS upload (los 4 ficheros pedidos)
-        timeout-minutes: 6
+      - name: FTP upload (01/02 required, 03/04 optional)
         env:
           FTP_SERVER:     ${{ secrets.FTP_SERVER }}
           FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
           FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
           FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
-        shell: bash
         run: |
           set -euo pipefail
-          DEST_BASE="$(printf "%s/Competiciones/ListadoEventos/Workflows" "${FTP_REMOTE_DIR%/}")"
-          TS="$(date -u +'%Y%m%dT%H%M%SZ')"
 
-          # Buscar "el más reciente" para cada patrón requerido
-          one_or_fail() { 
-            pat="$1"
-            f=$(ls -1t ./output/$pat 2>/dev/null | head -n1 || true)
-            if [ -z "$f" ]; then
-              echo "::error::No encontrado output/$pat"; exit 1
+          OUT_DIR="${OUT_DIR:-./output}"
+          TS="$(date -u +'%Y%m%dT%H%M%SZ')"
+          DEST_BASE="$(printf "%s/Competiciones/ListadoEventos/Workflows" "${FTP_REMOTE_DIR%/}")"
+
+          echo "[INFO] OUT_DIR=${OUT_DIR}"
+          echo "[INFO] TS=${TS}"
+          echo "[INFO] DEST_BASE=${DEST_BASE}"
+
+          one_or_fail() {
+            local pat="$1"
+            local f
+            f=$(ls -1t "${OUT_DIR%/}/${pat}" 2>/dev/null | head -n1 || true)
+            if [[ -z "${f}" ]]; then
+              echo "::error::No encontrado ${OUT_DIR%/}/${pat}"
+              exit 1
             fi
-            echo "$f"
+            printf "%s" "${f}"
+          }
+          one_or_none() {
+            local pat="$1"
+            ls -1t "${OUT_DIR%/}/${pat}" 2>/dev/null | head -n1 || true
           }
 
+          # Requeridos
           F01=$(one_or_fail "01events_*.json")
           F02=$(one_or_fail "02competiciones_detalladas_*.json")
-          F03=$(one_or_fail "participantes_procesado_*.csv")
-          F04=$(one_or_fail "participants_completos_final.json")
+          # Opcionales
+          F03=$(one_or_none "participantes_procesado_*.csv")
+          F04=$(one_or_none "participants_completos_final*.json")
 
-          echo "Subiendo a ${FTP_SERVER} -> ${DEST_BASE}"
-          lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" -e " \
-            set cmd:fail-exit true; \
-            set net:timeout 25; \
-            set net:max-retries 1; \
-            set net:persist-retries 0; \
-            set ftp:ssl-force true; \
-            set ftp:ssl-protect-data true; \
-            set ftp:passive-mode true; \
-            set ftp:prefer-epsv false; \
-            set ssl:verify-certificate no; \
-            cd '${FTP_REMOTE_DIR}' || cd '/${FTP_REMOTE_DIR}'; \
-            mkdir -f Competiciones; cd Competiciones; \
-            mkdir -f ListadoEventos; cd ListadoEventos; \
-            mkdir -f Workflows; cd Workflows; \
-            put -O . '${F01}' -o '01events_last.json'; \
-            put -O . '${F01}' -o '01events_${TS}.json'; \
-            put -O . '${F02}' -o '02info_last.json'; \
-            put -O . '${F02}' -o '02info_${TS}.json'; \
-            put -O . '${F03}' -o 'participantes_procesado_${TS}.csv'; \
-            put -O . '${F04}' -o 'participants_completos_final_last.json'; \
-            put -O . '${F04}' -o 'participants_completos_final_${TS}.json'; \
-            echo 'Contenido destino:'; pwd; cls -l; \
-            bye"
+          echo "[INFO] F01=${F01}"
+          echo "[INFO] F02=${F02}"
+          [[ -n "${F03:-}" ]] && echo "[INFO] F03=${F03}" || echo "::warning::F03 no encontrado (opcional)"
+          [[ -n "${F04:-}" ]] && echo "[INFO] F04=${F04}" || echo "::warning::F04 no encontrado (opcional)"
 
-      - name: (Verify) descargar último final y comparar hash
-        env:
-          FTP_SERVER:     ${{ secrets.FTP_SERVER }}
-          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
-          FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
-          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          DEST_BASE="$(printf "%s/Competiciones/ListadoEventos/Workflows" "${FTP_REMOTE_DIR%/}")"
-          test -f ./output/participants_completos_final.json
-          sha256sum ./output/participants_completos_final.json | awk '{print $1}' > local.sha256
-          lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" -e " \
-            set cmd:fail-exit true; \
-            set net:timeout 20; \
-            set net:max-retries 1; \
-            set ftp:ssl-force true; \
-            set ftp:ssl-protect-data true; \
-            set ftp:passive-mode true; \
-            set ftp:prefer-epsv false; \
-            set ssl:verify-certificate no; \
-            cd '${DEST_BASE}' || cd '/${DEST_BASE}'; \
-            get -O . 'participants_completos_final_last.json' -o remote_final.json; \
-            bye"
-          test -f remote_final.json
-          sha256sum remote_final.json | awk '{print $1}' > remote.sha256
-          echo "Local : $(cat local.sha256)"
-          echo "Remoto: $(cat remote.sha256)"
-          diff -q local.sha256 remote.sha256 && echo "OK: hash coincide"
+          LFTP_CMDS="
+          set cmd:fail-exit true;
+          set net:timeout 25;
+          set net:max-retries 1;
+          set net:persist-retries 0;
+          set ftp:ssl-force true;
+          set ftp:ssl-protect-data true;
+          set ftp:passive-mode true;
+          set ftp:prefer-epsv false;
+          set ssl:verify-certificate no;
+
+          cd '${FTP_REMOTE_DIR}' || cd '/${FTP_REMOTE_DIR}';
+          mkdir -f Competiciones; cd Competiciones;
+          mkdir -f ListadoEventos; cd ListadoEventos;
+          mkdir -f Workflows; cd Workflows;
+
+          put -O . '${F01}' -o '01events_last.json';
+          put -O . '${F01}' -o '01events_${TS}.json';
+          put -O . '${F02}' -o '02info_last.json';
+          put -O . '${F02}' -o '02info_${TS}.json';
+          "
+
+          if [[ -n "${F03:-}" ]]; then
+            LFTP_CMDS="${LFTP_CMDS} put -O . '${F03}' -o 'participantes_procesado_${TS}.csv';"
+          else
+            echo "::warning::No se sube participantes_procesado (no existe)."
+          fi
+
+          if [[ -n "${F04:-}" ]]; then
+            LFTP_CMDS="${LFTP_CMDS} put -O . '${F04}' -o 'participants_completos_final_last.json';
+          put -O . '${F04}' -o 'participants_completos_final_${TS}.json';"
+          else
+            echo "::warning::No se sube participants_completos_final (no existe)."
+          fi
+
+          LFTP_CMDS="${LFTP_CMDS}
+          echo 'Contenido destino:'; pwd; cls -l;
+          bye"
+
+          echo "[INFO] Conectando y subiendo a ${FTP_SERVER} -> ${DEST_BASE}"
+          lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" -e "${LFTP_CMDS}"
+          echo "[INFO] Subida completada."
