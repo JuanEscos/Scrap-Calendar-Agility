@@ -72,88 +72,80 @@ jobs:
           if-no-files-found: error
           retention-days: 10
 
-      - name: FTPS upload (archivos individuales con más reintentos)
-        timeout-minutes: 20
-        env:
-          FTP_SERVER:     ${{ secrets.FTP_SERVER }}
-          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
-          FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
-          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          DEST_BASE="$(printf "%s/Competiciones/ListadoEventos/Workflows" "${FTP_REMOTE_DIR%/}")"
-          TS="$(date -u +'%Y%m%dT%H%M%SZ')"
-          
-          # Buscar "el más reciente" para cada patrón requerido
-          one_or_fail() { 
-            pat="$1"
-            f=$(ls -1t ./output/$pat 2>/dev/null | head -n1 || true)
-            if [ -z "$f" ]; then
-              echo "::error::No encontrado output/$pat"; exit 1
-            fi
-            echo "$f"
-          }
-          
-          F01=$(one_or_fail "01events_*.json")
-          F02=$(one_or_fail "02competiciones_detalladas_*.json")
-          F03=$(one_or_fail "participantes_procesado_*.csv")
-          F04=$(one_or_fail "participants_completos_final.json")
-          
-          echo "Tamaños de archivos:"
-          ls -lh "$F01" "$F02" "$F03" "$F04"
-          
-          echo "Subiendo a ${FTP_SERVER} -> ${DEST_BASE}"
-          
-          # Función para subir archivos individualmente
-          upload_file() {
-            local file="$1"
-            local remote_name="$2"
-            echo "Subiendo: $file -> $remote_name"
-            
-            for attempt in {1..3}; do
-              echo "Intento $attempt de 3..."
-              if lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" -e " \
-                set cmd:fail-exit true; \
-                set net:timeout 60; \
-                set net:max-retries 2; \
-                set net:persist-retries 1; \
-                set ftp:ssl-force true; \
-                set ftp:ssl-protect-data true; \
-                set ftp:passive-mode true; \
-                set ftp:prefer-epsv false; \
-                set ssl:verify-certificate no; \
-                cd '${DEST_BASE}' || mkdir -p '${DEST_BASE}' && cd '${DEST_BASE}'; \
-                put -O . '$file' -o '$remote_name'; \
-                echo 'Subido: $remote_name'; \
-                bye"; then
-                echo "✅ $remote_name subido exitosamente"
-                return 0
-              else
-                echo "⚠️  Falló intento $attempt, reintentando en 5 segundos..."
-                sleep 5
-              fi
-            done
-            echo "❌ Error: No se pudo subir $remote_name después de 3 intentos"
-            return 1
-          }
-          
-          # Crear directorio remoto primero
-          lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" -e " \
-            set net:timeout 30; \
-            mkdir -p '${DEST_BASE}'; \
-            bye"
-          
-          # Subir archivos uno por uno
-          upload_file "$F01" "01events_last.json"
-          upload_file "$F01" "01events_${TS}.json"
-          upload_file "$F02" "02info_last.json"
-          upload_file "$F02" "02info_${TS}.json"
-          upload_file "$F03" "participantes_procesado_${TS}.csv"
-          upload_file "$F04" "participants_completos_final_last.json"
-          upload_file "$F04" "participants_completos_final_${TS}.json"
-          
-          echo "✅ Todos los archivos subidos exitosamente"
+      - name: FTPS upload (carpeta específica Competiciones/ListadoEventos/Workflows)
+  timeout-minutes: 20
+  env:
+    FTP_SERVER:     ${{ secrets.FTP_SERVER }}
+    FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
+    FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
+    FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
+  shell: bash
+  run: |
+    set -euo pipefail
+    TS="$(date -u +'%Y%m%dT%H%M%SZ')"
+    
+    # Buscar "el más reciente" para cada patrón requerido
+    one_or_fail() { 
+      pat="$1"
+      f=$(ls -1t ./output/$pat 2>/dev/null | head -n1 || true)
+      if [ -z "$f" ]; then
+        echo "::error::No encontrado output/$pat"; exit 1
+      fi
+      echo "$f"
+    }
+    
+    F01=$(one_or_fail "01events_*.json")
+    F02=$(one_or_fail "02competiciones_detalladas_*.json")
+    F03=$(one_or_fail "participantes_procesado_*.csv")
+    F04=$(one_or_fail "participants_completos_final.json")
+    
+    echo "Tamaños de archivos:"
+    ls -lh "$F01" "$F02" "$F03" "$F04"
+    
+    echo "Subiendo a ${FTP_SERVER}${FTP_REMOTE_DIR}/Competiciones/ListadoEventos/Workflows/"
+    
+    # Función para subir archivos individualmente
+    upload_file() {
+      local file="$1"
+      local remote_name="$2"
+      echo "Subiendo: $file -> $remote_name"
+      
+      for attempt in {1..3}; do
+        echo "Intento $attempt de 3..."
+        if lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_SERVER}" -e " \
+          set cmd:fail-exit true; \
+          set net:timeout 60; \
+          set net:max-retries 2; \
+          set ftp:ssl-force true; \
+          set ftp:ssl-protect-data true; \
+          set ftp:passive-mode true; \
+          set ftp:prefer-epsv false; \
+          set ssl:verify-certificate no; \
+          cd '${FTP_REMOTE_DIR}/Competiciones/ListadoEventos/Workflows'; \
+          put '$file' -o '$remote_name'; \
+          echo 'Subido: $remote_name'; \
+          bye"; then
+          echo "✅ $remote_name subido exitosamente"
+          return 0
+        else
+          echo "⚠️  Falló intento $attempt, reintentando en 5 segundos..."
+          sleep 5
+        fi
+      done
+      echo "❌ Error: No se pudo subir $remote_name después de 3 intentos"
+      return 1
+    }
+    
+    # Subir archivos uno por uno
+    upload_file "$F01" "01events_last.json"
+    upload_file "$F01" "01events_${TS}.json"
+    upload_file "$F02" "02info_last.json"
+    upload_file "$F02" "02info_${TS}.json"
+    upload_file "$F03" "participantes_procesado_${TS}.csv"
+    upload_file "$F04" "participants_completos_final_last.json"
+    upload_file "$F04" "participants_completos_final_${TS}.json"
+    
+    echo "✅ Todos los archivos subidos exitosamente a Competiciones/ListadoEventos/Workflows/"
 
       - name: (Verify) descargar último final y comparar hash
         env:
