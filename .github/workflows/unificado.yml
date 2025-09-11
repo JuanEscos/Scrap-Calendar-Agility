@@ -1,4 +1,4 @@
-name: Scrape & Upload (FlowAgility)
+name: Scrape & Upload (FlowAgility)GPT
 
 on:
   workflow_dispatch:
