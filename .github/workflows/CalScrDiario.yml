@@ -2,7 +2,7 @@ name: Calendario RSCE diario
 
 on:
   schedule:
-    - cron: '5 4 * * *'   # 04:05 UTC
+    - cron: '5 4 * * *'
   workflow_dispatch: {}
 
 jobs:
@@ -19,10 +19,10 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: 'pip'
+          cache: pip
           cache-dependency-path: requirements.txt
 
-      - name: Instalar dependencias (si existe requirements.txt)
+      - name: Instalar dependencias
         shell: bash
         run: |
           set -e
@@ -40,53 +40,32 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Busca primero por nombre exacto en todo el repo
           CSV_PATH="$(find . -type f -name 'eventos_agility_2025.csv' -print -quit)"
-          # Fallback opcional a ruta conocida si lo guardas siempre ahí
           if [ -z "$CSV_PATH" ] && [ -f "./resultados_agility/eventos_agility_2025.csv" ]; then
             CSV_PATH="./resultados_agility/eventos_agility_2025.csv"
           fi
           if [ -z "$CSV_PATH" ]; then
-            echo 'No se encontró eventos_agility_2025.csv'; exit 1
+            echo 'No se encontró eventos_agility_2025.csv' >&2
+            exit 1
           fi
           echo "csv_path=$CSV_PATH" >> "$GITHUB_OUTPUT"
           sha256sum "$CSV_PATH" | awk '{print $1}' > local.sha256
-          echo "CSV localizado: $CSV_PATH"
 
       - name: Definir rutas remotas
         id: remote
         shell: bash
         env:
-          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}   # p.ej.: /www/NewWeb/Privado
+          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
         run: |
           set -euo pipefail
-          dir="${FTP_REMOTE_DIR:-/}"
-          # Asegurar una sola barra inicial y sin barra final
-          dir="/${dir#/}"
-          dir="${dir%/}"
-          base_path="${dir}/Competiciones/EventosProx/RSCE/data"
-          remote_file="${base_path}/eventos_agility_2025.csv"
-          echo "base_path=${base_path}"   >> "$GITHUB_OUTPUT"
-          echo "remote_file=${remote_file}" >> "$GITHUB_OUTPUT"
-          echo "BASE_PATH: ${base_path}"
-          echo "REMOTE_FILE: ${remote_file}"
+          DIR="${FTP_REMOTE_DIR:-/}"
+          DIR="/${DIR#/}"; DIR="${DIR%/}"
+          BASE_PATH="${DIR}/Competiciones/EventosProx/RSCE/data"
+          REMOTE_FILE="${BASE_PATH}/eventos_agility_2025.csv"
+          echo "base_path=${BASE_PATH}"   >> "$GITHUB_OUTPUT"
+          echo "remote_file=${REMOTE_FILE}" >> "$GITHUB_OUTPUT"
 
-      - name: Listar carpeta remota (antes de subir)
-        shell: bash
-        env:
-          FTP_SERVER:   ${{ secrets.FTP_SERVER }}
-          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
-          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
-        run: |
-          set -euo pipefail
-          BASE_PATH="${{ steps.remote.outputs.base_path }}"
-          echo "Listando ftp://${FTP_SERVER}${BASE_PATH}/"
-          curl --fail --ssl-reqd \
-               --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
-               --ftp-method nocwd --disable-epsv --ftp-skip-pasv-ip \
-               "ftp://${FTP_SERVER}${BASE_PATH}/" -l || true
-
-      - name: Subir CSV (estrategia múltiple: FTPS explícito/activo e implícito 990)
+      - name: Subir CSV (3 estrategias)
         shell: bash
         env:
           FTP_SERVER:   ${{ secrets.FTP_SERVER }}
@@ -95,52 +74,38 @@ jobs:
         run: |
           set -euo pipefail
           CSV_PATH="${{ steps.csv.outputs.csv_path }}"
-          REMOTE_FILE="${{ steps.remote.outputs.remote_file }};type=i"   # fuerza binario
+          REMOTE_FILE="${{ steps.remote.outputs.remote_file }};type=i"
 
-          echo "Archivo local: ${CSV_PATH}"
-          echo "Ruta remota (path): ${REMOTE_FILE}"
-
-          # Intento 1: FTPS EXPLÍCITO (TLS en 21), PASV (por defecto), sin EPSV
-          echo "Intento 1) FTPS explícito, PASV"
+          echo "Intento 1) FTPS explícito (21), PASV"
           if curl -v --fail --ssl-reqd \
                --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
                --ftp-method nocwd \
                --disable-epsv --ftp-skip-pasv-ip \
                --upload-file "${CSV_PATH}" \
                "ftp://${FTP_SERVER}${REMOTE_FILE}"; then
-            echo "✅ Subida OK (FTPS explícito PASV)"
+            echo "OK intento 1"
           else
-            rc=$?
-            echo "❌ Fallo intento 1 (rc=${rc})"
-            echo "Intento 2) FTPS explícito, MODO ACTIVO"
-            # Modo activo: el servidor abre conexión de datos hacia el runner
+            echo "Fallo intento 1, probando intento 2 (activo)…"
             if curl -v --fail --ssl-reqd \
                  --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
                  --ftp-method nocwd \
                  --ftp-port "-" \
                  --upload-file "${CSV_PATH}" \
                  "ftp://${FTP_SERVER}${REMOTE_FILE}"; then
-              echo "✅ Subida OK (FTPS explícito ACTIVO)"
+              echo "OK intento 2"
             else
-              rc=$?
-              echo "❌ Fallo intento 2 (rc=${rc})"
-              echo "Intento 3) FTPS IMPLÍCITO (puerto 990), PASV"
-              if curl -v --fail \
+              echo "Fallo intento 2, probando intento 3 (implícito 990)…"
+              curl -v --fail \
                    --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
                    --ftp-method nocwd \
                    --disable-epsv --ftp-skip-pasv-ip \
                    --upload-file "${CSV_PATH}" \
-                   "ftps://${FTP_SERVER}:990${REMOTE_FILE}"; then
-                echo "✅ Subida OK (FTPS implícito 990)"
-              else
-                rc=$?
-                echo "❌ Fallo intento 3 (rc=${rc})"
-                exit "${rc}"
-              fi
+                   "ftps://${FTP_SERVER}:990${REMOTE_FILE}"
+              echo "OK intento 3"
             fi
           fi
 
-      - name: Verificar remoto (descargar y comparar hash)
+      - name: Verificar remoto (descarga y hash)
         shell: bash
         env:
           FTP_SERVER:   ${{ secrets.FTP_SERVER }}
@@ -150,7 +115,7 @@ jobs:
           set -euo pipefail
           REMOTE_FILE="${{ steps.remote.outputs.remote_file }};type=i"
 
-          echo "Verificación con FTPS explícito (21)…"
+          echo "Descarga verificación (FTPS explícito 21)…"
           if curl --fail --ssl-reqd \
                --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
                --ftp-method nocwd \
@@ -159,7 +124,7 @@ jobs:
                "ftp://${FTP_SERVER}${REMOTE_FILE}"; then
             :
           else
-            echo "Descarga explícita falló, probamos FTPS implícito 990…"
+            echo "Fallo verificación explícita; probando implícito 990…"
             curl --fail \
                  --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
                  --ftp-method nocwd \
@@ -170,4 +135,4 @@ jobs:
 
           sha256sum remote.csv | awk '{print $1}' > remote.sha256
           diff -q local.sha256 remote.sha256
-          echo "✅ Hash OK"
+          echo "Hash OK"
