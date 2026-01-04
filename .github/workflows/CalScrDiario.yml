@@ -12,54 +12,67 @@ jobs:
       TZ: Europe/Madrid
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
           cache-dependency-path: requirements.txt
 
       - name: Instalar dependencias (si existe requirements.txt)
+        shell: bash
         run: |
+          set -e
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
       - name: Ejecutar script que genera el CSV
+        shell: bash
         run: |
+          set -e
           python "./Calendario RSCE 25.08.22.py"
 
       - name: Localizar CSV y calcular hash
         id: csv
+        shell: bash
         run: |
           set -euo pipefail
+          # Busca primero por nombre exacto en todo el repo
           CSV_PATH="$(find . -type f -name 'eventos_agility_2025.csv' -print -quit)"
+          # Fallback opcional a ruta conocida si lo guardas siempre ahí
+          if [ -z "$CSV_PATH" ] && [ -f "./resultados_agility/eventos_agility_2025.csv" ]; then
+            CSV_PATH="./resultados_agility/eventos_agility_2025.csv"
+          fi
           if [ -z "$CSV_PATH" ]; then
             echo 'No se encontró eventos_agility_2025.csv'; exit 1
           fi
           echo "csv_path=$CSV_PATH" >> "$GITHUB_OUTPUT"
           sha256sum "$CSV_PATH" | awk '{print $1}' > local.sha256
+          echo "CSV localizado: $CSV_PATH"
 
-      - name: Comprobar curl
-        run: curl --version
-
-      - name: Preparar URL remota (FTPS explícito en 21)
+      - name: Definir rutas remotas
         id: remote
+        shell: bash
         env:
-          FTP_SERVER:     ${{ secrets.FTP_SERVER }}
-          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
-          FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
           FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}   # p.ej.: /www/NewWeb/Privado
         run: |
           set -euo pipefail
-          # Normaliza: quita barras sobrantes y URL-encode (sin codificar '/')
-          ENC_DIR="$(python -c "import os,urllib.parse; p=os.environ.get('FTP_REMOTE_DIR','/'); p='/' + p.strip('/').rstrip('/'); print(urllib.parse.quote(p, safe='/'))")"
-          BASE_PATH="${ENC_DIR}/Competiciones/EventosProx/RSCE/data"
-          echo "base_path=${BASE_PATH}" >> "$GITHUB_OUTPUT"
-          echo "remote_file=${BASE_PATH}/eventos_agility_2025.csv" >> "$GITHUB_OUTPUT"
-          echo "📁 BASE_PATH=${BASE_PATH}"
+          dir="${FTP_REMOTE_DIR:-/}"
+          # Asegurar una sola barra inicial y sin barra final
+          dir="/${dir#/}"
+          dir="${dir%/}"
+          base_path="${dir}/Competiciones/EventosProx/RSCE/data"
+          remote_file="${base_path}/eventos_agility_2025.csv"
+          echo "base_path=${base_path}"   >> "$GITHUB_OUTPUT"
+          echo "remote_file=${remote_file}" >> "$GITHUB_OUTPUT"
+          echo "BASE_PATH: ${base_path}"
+          echo "REMOTE_FILE: ${remote_file}"
 
       - name: Listar carpeta remota (antes de subir)
+        shell: bash
         env:
           FTP_SERVER:   ${{ secrets.FTP_SERVER }}
           FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
@@ -67,12 +80,14 @@ jobs:
         run: |
           set -euo pipefail
           BASE_PATH="${{ steps.remote.outputs.base_path }}"
+          echo "Listando ftp://${FTP_SERVER}${BASE_PATH}/"
           curl --fail --ssl-reqd \
                --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
                --ftp-method nocwd --disable-epsv --ftp-skip-pasv-ip \
                "ftp://${FTP_SERVER}${BASE_PATH}/" -l || true
 
       - name: Subir CSV (estrategia múltiple: FTPS explícito/activo e implícito 990)
+        shell: bash
         env:
           FTP_SERVER:   ${{ secrets.FTP_SERVER }}
           FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
@@ -80,7 +95,7 @@ jobs:
         run: |
           set -euo pipefail
           CSV_PATH="${{ steps.csv.outputs.csv_path }}"
-          REMOTE_FILE="${{ steps.remote.outputs.remote_file }};type=i"     # fuerza binario
+          REMOTE_FILE="${{ steps.remote.outputs.remote_file }};type=i"   # fuerza binario
 
           echo "Archivo local: ${CSV_PATH}"
           echo "Ruta remota (path): ${REMOTE_FILE}"
@@ -98,7 +113,7 @@ jobs:
             rc=$?
             echo "❌ Fallo intento 1 (rc=${rc})"
             echo "Intento 2) FTPS explícito, MODO ACTIVO"
-            # Modo activo: el servidor abre conexión de datos hacia runner
+            # Modo activo: el servidor abre conexión de datos hacia el runner
             if curl -v --fail --ssl-reqd \
                  --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
                  --ftp-method nocwd \
@@ -126,6 +141,7 @@ jobs:
           fi
 
       - name: Verificar remoto (descargar y comparar hash)
+        shell: bash
         env:
           FTP_SERVER:   ${{ secrets.FTP_SERVER }}
           FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
@@ -155,4 +171,3 @@ jobs:
           sha256sum remote.csv | awk '{print $1}' > remote.sha256
           diff -q local.sha256 remote.sha256
           echo "✅ Hash OK"
-
