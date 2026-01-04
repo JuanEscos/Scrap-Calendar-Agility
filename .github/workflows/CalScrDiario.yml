@@ -52,16 +52,12 @@ jobs:
           FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}   # p.ej.: /www/NewWeb/Privado
         run: |
           set -euo pipefail
-          ENC_DIR="$(python - <<'PY'
-import os, urllib.parse
-p = os.environ.get('FTP_REMOTE_DIR', '/')
-p = '/' + p.strip('/').rstrip('/')
-print(urllib.parse.quote(p))
-PY
-)"
+          # Normaliza: quita barras sobrantes y URL-encode (sin codificar '/')
+          ENC_DIR="$(python -c "import os,urllib.parse; p=os.environ.get('FTP_REMOTE_DIR','/'); p='/' + p.strip('/').rstrip('/'); print(urllib.parse.quote(p, safe='/'))")"
           BASE_PATH="${ENC_DIR}/Competiciones/EventosProx/RSCE/data"
           echo "base_path=${BASE_PATH}" >> "$GITHUB_OUTPUT"
           echo "remote_file=${BASE_PATH}/eventos_agility_2025.csv" >> "$GITHUB_OUTPUT"
+          echo "📁 BASE_PATH=${BASE_PATH}"
 
       - name: Listar carpeta remota (antes de subir)
         env:
