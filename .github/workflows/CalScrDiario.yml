@@ -40,43 +40,86 @@ jobs:
           echo "csv_path=$CSV_PATH" >> "$GITHUB_OUTPUT"
           sha256sum "$CSV_PATH" | awk '{print $1}' > local.sha256
 
-      - name: Listar carpeta remota (antes de subir)
+      - name: Comprobar curl
+        run: curl --version
+
+      - name: Preparar URL remota (FTPS explícito en 21)
+        id: remote
         env:
           FTP_SERVER:     ${{ secrets.FTP_SERVER }}
           FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
           FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
-          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}   # /www/NewWeb/Privado
+          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}   # p.ej.: /www/NewWeb/Privado
         run: |
           set -euo pipefail
-          BASE="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/Competiciones/EventosProx/RSCE/data"
-          curl --fail --ssl-reqd --user "${FTP_USERNAME}:${FTP_PASSWORD}" "${BASE}/" -l || true
+          # Normalizamos el directorio remoto para evitar dobles barras
+          # y escapamos espacios por si los hubiera (URL-encode básico).
+          norm() { python - "$1" <<'PY'
+import sys, urllib.parse, os
+p = sys.argv[1]
+# Quitar barra final, asegurar barra inicial
+p = '/' + p.strip().lstrip('/').rstrip('/')
+print(urllib.parse.quote(p))
+PY
+          }
+
+          REM_DIR_ENC="$(norm "${FTP_REMOTE_DIR:-/}")"
+          BASE_PATH="${REM_DIR_ENC}/Competiciones/EventosProx/RSCE/data"
+          # Construimos URLs sin credenciales (las pasaremos con --user para no exponerlas)
+          echo "base_path=$BASE_PATH" >> "$GITHUB_OUTPUT"
+          echo "remote_file=$BASE_PATH/eventos_agility_2025.csv" >> "$GITHUB_OUTPUT"
+
+      - name: Listar carpeta remota (antes de subir)
+        env:
+          FTP_SERVER:   ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          BASE_PATH="${{ steps.remote.outputs.base_path }}"
+          # Listado en modo FTPS (explícito): ftp:// + --ssl-reqd
+          # --ftp-method nocwd evita problemas con CWD en rutas profundas
+          # --disable-epsv / --ftp-skip-pasv-ip ayudan con firewalls/NAT comunes en FTPS
+          curl --fail --ssl-reqd \
+               --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
+               --ftp-method nocwd --disable-epsv --ftp-skip-pasv-ip \
+               "ftp://${FTP_SERVER}${BASE_PATH}/" -l || true
 
       - name: Subir CSV por FTPS (TLS explícito en 21)
         env:
-          FTP_SERVER:     ${{ secrets.FTP_SERVER }}
-          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
-          FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
-          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
+          FTP_SERVER:   ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
         run: |
           set -euo pipefail
-          BASE="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/Competiciones/EventosProx/RSCE/data"
-          curl --fail --ssl-reqd --ftp-create-dirs --disable-epsv --ftp-skip-pasv-ip \
+          REMOTE_FILE="${{ steps.remote.outputs.remote_file }}"
+          CSV_PATH="${{ steps.csv.outputs.csv_path }}"
+
+          # Subida FTPS (explícito) robusta
+          curl --fail --ssl-reqd \
                --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
-               --upload-file "${{ steps.csv.outputs.csv_path }}" \
-               "${BASE}/eventos_agility_2025.csv"
+               --ftp-method nocwd \
+               --ftp-create-dirs \
+               --disable-epsv --ftp-skip-pasv-ip \
+               --upload-file "${CSV_PATH}" \
+               "ftp://${FTP_SERVER}${REMOTE_FILE}"
 
       - name: Verificar remoto (descargar y comparar hash)
         env:
-          FTP_SERVER:     ${{ secrets.FTP_SERVER }}
-          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
-          FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
-          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
+          FTP_SERVER:   ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
         run: |
           set -euo pipefail
-          BASE="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/Competiciones/EventosProx/RSCE/data"
-          curl --fail --ssl-reqd --disable-epsv --ftp-skip-pasv-ip \
+          REMOTE_FILE="${{ steps.remote.outputs.remote_file }}"
+
+          curl --fail --ssl-reqd \
                --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
-               --output remote.csv "${BASE}/eventos_agility_2025.csv"
+               --ftp-method nocwd \
+               --disable-epsv --ftp-skip-pasv-ip \
+               --output remote.csv \
+               "ftp://${FTP_SERVER}${REMOTE_FILE}"
+
           sha256sum remote.csv | awk '{print $1}' > remote.sha256
           diff -q local.sha256 remote.sha256
           echo "Hash OK"
