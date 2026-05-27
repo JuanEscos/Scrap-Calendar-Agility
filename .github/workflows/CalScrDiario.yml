@@ -1,4 +1,4 @@
-name: Calendario RSCE diario
+name: Calendario RSCE 2026 diario
 
 on:
   schedule:
@@ -12,134 +12,72 @@ jobs:
       TZ: Europe/Madrid
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
-          cache-dependency-path: requirements.txt
 
-      - name: Instalar dependencias (si existe requirements.txt)
-        shell: bash
+      - name: Instalar dependencias
         run: |
-          set -euo pipefail
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install selenium webdriver-manager beautifulsoup4 geopy python-dotenv folium pandas
 
-      - name: Ejecutar script que genera el CSV
-        shell: bash
+      - name: Ejecutar scraper CSV y GeoJSON
+        run: |
+          # Por defecto guarda en la carpeta ./resultados_agility
+          python "./scrape_rsce_csv_geo.py"
+          
+      - name: Ejecutar generador de mapa HTML
+        run: |
+          # Copia el CSV a la raíz temporalmente para que generate_map.py lo encuentre
+          cp ./resultados_agility/eventos_agility_2026.csv ./eventos_agility_2026.csv || true
+          python "./generate_map.py"
+
+      - name: Localizar archivos
+        id: files
         run: |
           set -euo pipefail
-          python "./Calendario RSCE 25.08.22.py"
+          CSV_PATH="$(find . -type f -name 'eventos_agility_2026.csv' | head -n 1)"
+          GEO_PATH="$(find . -type f -name 'eventos_agility_2026.geojson' | head -n 1)"
+          MAP_PATH="$(find . -type f -name 'mapa_agility_2026.html' | head -n 1)"
+          
+          echo "csv_path=$CSV_PATH" >> "$GITHUB_OUTPUT"
+          echo "geo_path=$GEO_PATH" >> "$GITHUB_OUTPUT"
+          echo "map_path=$MAP_PATH" >> "$GITHUB_OUTPUT"
 
-      - name: Localizar CSV y calcular hash
-        id: csv
-        shell: bash
-        run: |
-          set -euo pipefail
-          CSV_PATH="$(find . -type f -name 'eventos_agility_2025.csv' -print -quit || true)"
-          if [ -z "${CSV_PATH:-}" ]; then
-            echo 'No se encontró eventos_agility_2025.csv'; exit 1
-          fi
-          echo "csv_path=${CSV_PATH}" >> "${GITHUB_OUTPUT}"
-          sha256sum "${CSV_PATH}" | awk '{print $1}' > local.sha256
-          echo "Local SHA256: $(cat local.sha256)"
-
-      - name: Detectar base remota y archivo remoto
-        id: remote
-        shell: bash
+      - name: Subir Archivos por FTPS
         env:
-          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}   # p.ej.: /www/NewWeb/Privado
+          FTP_SERVER:     ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
+          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }} # Ejemplo: /www/NewWeb/Privado
         run: |
           set -euo pipefail
-          p="${FTP_REMOTE_DIR:-/}"
-          # asegurar barra inicial y sin barra final
-          p="/${p#/}"
-          p="${p%/}"
-          BASE_PATH="${p}/Competiciones/EventosProx/RSCE/data"
-          REMOTE_FILE="${BASE_PATH}/eventos_agility_2025.csv"
-          echo "base_path=${BASE_PATH}"   >> "${GITHUB_OUTPUT}"
-          echo "remote_file=${REMOTE_FILE}" >> "${GITHUB_OUTPUT}"
-          echo "Base remota: ${BASE_PATH}"
-          echo "Archivo remoto: ${REMOTE_FILE}"
-
-      - name: Listar carpeta remota (antes de subir)
-        shell: bash
-        env:
-          FTP_SERVER:   ${{ secrets.FTP_SERVER }}
-          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
-          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
-        run: |
-          set -euo pipefail
-          BASE_PATH="${{ steps.remote.outputs.base_path }}"
-          echo "Listando ftp://${FTP_SERVER}${BASE_PATH}/"
-          # Listado simple; si falla no paramos el job
-          curl --fail --ssl-reqd \
+          
+          # Base para CSV y GeoJSON (carpeta data)
+          BASE_DATA="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/Competiciones/EventosProx/RSCE/data"
+          
+          # Base para HTML (carpeta padre)
+          BASE_HTML="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/Competiciones/EventosProx/RSCE"
+          
+          # Subir CSV
+          curl --fail --ssl-reqd --ftp-create-dirs --disable-epsv --ftp-skip-pasv-ip \
                --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
-               --ftp-method nocwd \
-               "ftp://${FTP_SERVER}${BASE_PATH}/" -l || true
-
-      - name: Subir CSV (manejo 426 con fallback a PROT C)
-        shell: bash
-        env:
-          FTP_SERVER:   ${{ secrets.FTP_SERVER }}
-          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
-          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
-        run: |
-          set -euo pipefail
-          CSV_PATH="${{ steps.csv.outputs.csv_path }}"
-          REMOTE_FILE="${{ steps.remote.outputs.remote_file }};type=i"
-
-          echo "Intento A) FTPS explícito (21), PASV/EPSV, PROT P (datos cifrados)"
-          if curl -v --fail --ssl-reqd \
+               --upload-file "${{ steps.files.outputs.csv_path }}" \
+               "${BASE_DATA}/eventos_agility_2026.csv"
+               
+          # Subir GeoJSON
+          curl --fail --ssl-reqd --ftp-create-dirs --disable-epsv --ftp-skip-pasv-ip \
                --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
-               --ftp-method nocwd \
-               --upload-file "${CSV_PATH}" \
-               "ftp://${FTP_SERVER}${REMOTE_FILE}"; then
-            echo "OK intento A"
-            exit 0
-          fi
-
-          echo "Fallo intento A (posible 426). Intento B) Control cifrado solo (PROT C), datos en claro"
-          # --ftp-ssl-control cifra el canal de control; datos sin TLS (suele esquivar 426)
-          curl -v --fail --ftp-ssl-control \
+               --upload-file "${{ steps.files.outputs.geo_path }}" \
+               "${BASE_DATA}/eventos_agility_2026.geojson"
+               
+          # Subir Mapa HTML
+          curl --fail --ssl-reqd --ftp-create-dirs --disable-epsv --ftp-skip-pasv-ip \
                --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
-               --ftp-method nocwd \
-               --upload-file "${CSV_PATH}" \
-               "ftp://${FTP_SERVER}${REMOTE_FILE}"
-          echo "OK intento B"
-
-      - name: Verificar remoto (descargar y comparar hash)
-        shell: bash
-        env:
-          FTP_SERVER:   ${{ secrets.FTP_SERVER }}
-          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
-          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
-        run: |
-          set -euo pipefail
-          REMOTE_FILE="${{ steps.remote.outputs.remote_file }};type=i"
-
-          echo "Descarga verificación A) FTPS explícito (21), PROT P"
-          if curl --fail --ssl-reqd \
-               --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
-               --ftp-method nocwd \
-               --output remote.csv \
-               "ftp://${FTP_SERVER}${REMOTE_FILE}"; then
-            echo "Descarga A OK"
-          else
-            echo "Fallo verificación A. Descarga verificación B) Control cifrado solo (PROT C)"
-            curl --fail --ftp-ssl-control \
-                 --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
-                 --ftp-method nocwd \
-                 --output remote.csv \
-                 "ftp://${FTP_SERVER}${REMOTE_FILE}"
-            echo "Descarga B OK"
-          fi
-
-          sha256sum remote.csv | awk '{print $1}' > remote.sha256
-          echo "Remote SHA256: $(cat remote.sha256)"
-          diff -q local.sha256 remote.sha256
-          echo "Hash OK — subida verificada"
+               --upload-file "${{ steps.files.outputs.map_path }}" \
+               "${BASE_HTML}/mapa_agility_2026.html"
+               
+          echo "Todos los archivos subidos con éxito!"
