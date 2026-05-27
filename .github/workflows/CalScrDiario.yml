@@ -47,7 +47,7 @@ jobs:
           echo "geo_path=$GEO_PATH" >> "$GITHUB_OUTPUT"
           echo "map_path=$MAP_PATH" >> "$GITHUB_OUTPUT"
 
-      - name: Subir Archivos por FTPS
+      - name: Subir Archivos por FTPS (Manejo 426 con fallback a PROT C)
         env:
           FTP_SERVER:     ${{ secrets.FTP_SERVER }}
           FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
@@ -56,28 +56,37 @@ jobs:
         run: |
           set -euo pipefail
           
-          # Base para CSV y GeoJSON (carpeta data)
+          # Archivos a subir y sus destinos
           BASE_DATA="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/Competiciones/EventosProx/RSCE/data"
-          
-          # Base para HTML (carpeta padre)
           BASE_HTML="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/Competiciones/EventosProx/RSCE"
           
-          # Subir CSV
-          curl --fail --ssl-reqd --ftp-create-dirs --disable-epsv --ftp-skip-pasv-ip \
-               --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
-               --upload-file "${{ steps.files.outputs.csv_path }}" \
-               "${BASE_DATA}/eventos_agility_2026.csv"
-               
-          # Subir GeoJSON
-          curl --fail --ssl-reqd --ftp-create-dirs --disable-epsv --ftp-skip-pasv-ip \
-               --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
-               --upload-file "${{ steps.files.outputs.geo_path }}" \
-               "${BASE_DATA}/eventos_agility_2026.geojson"
-               
-          # Subir Mapa HTML
-          curl --fail --ssl-reqd --ftp-create-dirs --disable-epsv --ftp-skip-pasv-ip \
-               --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
-               --upload-file "${{ steps.files.outputs.map_path }}" \
-               "${BASE_HTML}/mapa_agility_2026.html"
-               
+          declare -A FILES_TO_UPLOAD=(
+            ["${{ steps.files.outputs.csv_path }}"]="${BASE_DATA}/eventos_agility_2026.csv"
+            ["${{ steps.files.outputs.geo_path }}"]="${BASE_DATA}/eventos_agility_2026.geojson"
+            ["${{ steps.files.outputs.map_path }}"]="${BASE_HTML}/mapa_agility_2026.html"
+          )
+          
+          for local_file in "${!FILES_TO_UPLOAD[@]}"; do
+            remote_url="${FILES_TO_UPLOAD[$local_file]}"
+            echo "Subiendo $local_file a $remote_url ..."
+            
+            echo "Intento A) FTPS explícito, PROT P (datos cifrados)"
+            if curl --fail --ssl-reqd --ftp-create-dirs \
+                 --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
+                 --ftp-method nocwd \
+                 --upload-file "$local_file" \
+                 "$remote_url"; then
+              echo "OK intento A"
+            else
+              echo "Fallo intento A (posible error 426). Intento B) Control cifrado solo (PROT C), datos en claro"
+              curl --fail --ftp-ssl-control --ftp-create-dirs \
+                   --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
+                   --ftp-method nocwd \
+                   --upload-file "$local_file" \
+                   "$remote_url"
+              echo "OK intento B"
+            fi
+            echo "-----------------------------------"
+          done
+          
           echo "Todos los archivos subidos con éxito!"
