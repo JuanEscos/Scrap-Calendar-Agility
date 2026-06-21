@@ -8,29 +8,41 @@ on:
 jobs:
   run_and_upload:
     runs-on: ubuntu-latest
+
     env:
       TZ: Europe/Madrid
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Mostrar IP pública del runner
+        run: |
+          echo "IP pública del runner GitHub Actions:"
+          curl -s https://api.ipify.org
+          echo ""
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
 
       - name: Instalar dependencias
         run: |
+          set -euo pipefail
           python -m pip install --upgrade pip
           pip install selenium webdriver-manager beautifulsoup4 geopy python-dotenv folium pandas
 
       - name: Ejecutar scraper CSV y GeoJSON
         run: |
+          set -euo pipefail
           # Por defecto guarda en la carpeta ./resultados_agility
           python "./scrape_rsce_csv_geo.py"
-          
+
       - name: Ejecutar generador de mapa HTML
         run: |
+          set -euo pipefail
           # Copia el CSV a la raíz temporalmente para que generate_map.py lo encuentre
           cp ./resultados_agility/eventos_agility_2026.csv ./eventos_agility_2026.csv || true
           python "./generate_map.py"
@@ -39,54 +51,171 @@ jobs:
         id: files
         run: |
           set -euo pipefail
+
           CSV_PATH="$(find . -type f -name 'eventos_agility_2026.csv' | head -n 1)"
           GEO_PATH="$(find . -type f -name 'eventos_agility_2026.geojson' | head -n 1)"
           MAP_PATH="$(find . -type f -name 'mapa_agility_2026.html' | head -n 1)"
-          
+
+          if [ -z "$CSV_PATH" ]; then
+            echo "❌ No se ha encontrado eventos_agility_2026.csv"
+            exit 1
+          fi
+
+          if [ -z "$GEO_PATH" ]; then
+            echo "❌ No se ha encontrado eventos_agility_2026.geojson"
+            exit 1
+          fi
+
+          if [ -z "$MAP_PATH" ]; then
+            echo "❌ No se ha encontrado mapa_agility_2026.html"
+            exit 1
+          fi
+
+          echo "CSV encontrado: $CSV_PATH"
+          echo "GeoJSON encontrado: $GEO_PATH"
+          echo "Mapa HTML encontrado: $MAP_PATH"
+
           echo "csv_path=$CSV_PATH" >> "$GITHUB_OUTPUT"
           echo "geo_path=$GEO_PATH" >> "$GITHUB_OUTPUT"
           echo "map_path=$MAP_PATH" >> "$GITHUB_OUTPUT"
 
-      - name: Subir Archivos por FTPS (Manejo 426 con fallback a PROT C)
-        env:
-          FTP_SERVER:     ${{ secrets.FTP_SERVER }}
-          FTP_USERNAME:   ${{ secrets.FTP_USERNAME }}
-          FTP_PASSWORD:   ${{ secrets.FTP_PASSWORD }}
-          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }} # Ejemplo: /www/NewWeb/Privado
+      - name: Backup artifacts antes de SFTP
+        uses: actions/upload-artifact@v4
+        with:
+          name: calendario-rsce-2026-${{ github.run_number }}
+          path: |
+            ${{ steps.files.outputs.csv_path }}
+            ${{ steps.files.outputs.geo_path }}
+            ${{ steps.files.outputs.map_path }}
+          retention-days: 10
+
+      - name: Instalar cliente SFTP
         run: |
           set -euo pipefail
-          
-          # Archivos a subir y sus destinos
-          BASE_DATA="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/Competiciones/EventosProx/RSCE/data"
-          BASE_HTML="ftp://${FTP_SERVER}${FTP_REMOTE_DIR}/Competiciones/EventosProx/RSCE"
-          
-          declare -A FILES_TO_UPLOAD=(
-            ["${{ steps.files.outputs.csv_path }}"]="${BASE_DATA}/eventos_agility_2026.csv"
-            ["${{ steps.files.outputs.geo_path }}"]="${BASE_DATA}/eventos_agility_2026.geojson"
-            ["${{ steps.files.outputs.map_path }}"]="${BASE_HTML}/mapa_agility_2026.html"
-          )
-          
-          for local_file in "${!FILES_TO_UPLOAD[@]}"; do
-            remote_url="${FILES_TO_UPLOAD[$local_file]}"
-            echo "Subiendo $local_file a $remote_url ..."
-            
-            echo "Intento A) FTPS explícito, PROT P (datos cifrados)"
-            if curl --fail --ssl-reqd --ftp-create-dirs \
-                 --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
-                 --ftp-method nocwd \
-                 --upload-file "$local_file" \
-                 "$remote_url"; then
-              echo "OK intento A"
-            else
-              echo "Fallo intento A (posible error 426). Intento B) Control cifrado solo (PROT C), datos en claro"
-              curl --fail --ftp-ssl-control --ftp-create-dirs \
-                   --user "${FTP_USERNAME}:${FTP_PASSWORD}" \
-                   --ftp-method nocwd \
-                   --upload-file "$local_file" \
-                   "$remote_url"
-              echo "OK intento B"
+          sudo apt-get update
+          sudo apt-get install -y lftp
+
+      - name: Subir archivos por SFTP SSH 22
+        id: sftp_upload
+        env:
+          FTP_SERVER:   ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+          CSV_PATH:     ${{ steps.files.outputs.csv_path }}
+          GEO_PATH:     ${{ steps.files.outputs.geo_path }}
+          MAP_PATH:     ${{ steps.files.outputs.map_path }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$FTP_SERVER" ] || [ -z "$FTP_USERNAME" ] || [ -z "$FTP_PASSWORD" ]; then
+            echo "❌ Variables SFTP no configuradas"
+            exit 1
+          fi
+
+          if [ -z "$CSV_PATH" ] || [ -z "$GEO_PATH" ] || [ -z "$MAP_PATH" ]; then
+            echo "❌ Alguna ruta local está vacía"
+            echo "CSV_PATH=$CSV_PATH"
+            echo "GEO_PATH=$GEO_PATH"
+            echo "MAP_PATH=$MAP_PATH"
+            exit 1
+          fi
+
+          REMOTE_DATA_DIR="/www/NewWeb/Privado/Competiciones/EventosProx/RSCE/data"
+          REMOTE_HTML_DIR="/www/NewWeb/Privado/Competiciones/EventosProx/RSCE"
+
+          echo "Subida por SFTP:"
+          echo "Servidor: ${FTP_SERVER}"
+          echo "Puerto: 22"
+          echo "Data dir: ${REMOTE_DATA_DIR}"
+          echo "HTML dir: ${REMOTE_HTML_DIR}"
+
+          upload_one () {
+            local SRC="$1"
+            local REMOTE_DIR="$2"
+            local DST="$3"
+
+            echo ""
+            echo "===================================================="
+            echo "Subiendo archivo local: ${SRC}"
+            echo "Carpeta remota: ${REMOTE_DIR}"
+            echo "Nombre remoto: ${DST}"
+            echo "===================================================="
+
+            if [ ! -f "$SRC" ]; then
+              echo "❌ No existe el archivo local: $SRC"
+              return 1
             fi
-            echo "-----------------------------------"
-          done
-          
-          echo "Todos los archivos subidos con éxito!"
+
+            for attempt in 1 2 3 4 5; do
+              echo "Intento SFTP ${attempt}/5 para ${DST}"
+
+              set +e
+              lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "sftp://${FTP_SERVER}:22" -e "\
+                set cmd:fail-exit yes; \
+                set net:timeout 60; \
+                set net:max-retries 3; \
+                set net:reconnect-interval-base 20; \
+                set sftp:auto-confirm yes; \
+                cd ${REMOTE_DIR}; \
+                put ${SRC} -o ${DST}; \
+                bye"
+              rc=$?
+              set -e
+
+              if [ "$rc" -eq 0 ]; then
+                echo "✅ OK por SFTP: ${DST}"
+                return 0
+              fi
+
+              echo "⚠️ Falló SFTP para ${DST} con rc=${rc}"
+
+              if [ "$attempt" -lt 5 ]; then
+                echo "Esperando 60 segundos antes de reintentar..."
+                sleep 60
+              fi
+            done
+
+            echo "❌ No se pudo subir ${DST} por SFTP después de varios intentos"
+            return 1
+          }
+
+          upload_one "$CSV_PATH" "$REMOTE_DATA_DIR" "eventos_agility_2026.csv"
+          upload_one "$GEO_PATH" "$REMOTE_DATA_DIR" "eventos_agility_2026.geojson"
+          upload_one "$MAP_PATH" "$REMOTE_HTML_DIR" "mapa_agility_2026.html"
+
+      - name: Verificar archivos remotos por SFTP
+        if: steps.sftp_upload.outcome == 'success'
+        env:
+          FTP_SERVER:   ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          REMOTE_DATA_DIR="/www/NewWeb/Privado/Competiciones/EventosProx/RSCE/data"
+          REMOTE_HTML_DIR="/www/NewWeb/Privado/Competiciones/EventosProx/RSCE"
+
+          echo "Verificando carpeta data..."
+          lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "sftp://${FTP_SERVER}:22" -e "\
+            set cmd:fail-exit yes; \
+            set net:timeout 60; \
+            set net:max-retries 3; \
+            set net:reconnect-interval-base 20; \
+            set sftp:auto-confirm yes; \
+            cd ${REMOTE_DATA_DIR}; \
+            cls -l eventos_agility_2026.csv; \
+            cls -l eventos_agility_2026.geojson; \
+            bye"
+
+          echo "Verificando carpeta HTML..."
+          lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "sftp://${FTP_SERVER}:22" -e "\
+            set cmd:fail-exit yes; \
+            set net:timeout 60; \
+            set net:max-retries 3; \
+            set net:reconnect-interval-base 20; \
+            set sftp:auto-confirm yes; \
+            cd ${REMOTE_HTML_DIR}; \
+            cls -l mapa_agility_2026.html; \
+            bye"
+
+          echo "✅ Verificación SFTP completada correctamente"
