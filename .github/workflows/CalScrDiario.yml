@@ -106,23 +106,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y lftp
 
-          lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "sftp://${FTP_SERVER}:22" -e "\
-            set cmd:fail-exit no; \
+          timeout 180 lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "sftp://${FTP_SERVER}:22" -e "\
+            set cmd:fail-exit yes; \
+            set net:timeout 30; \
+            set net:max-retries 1; \
+            set net:reconnect-interval-base 10; \
             set sftp:auto-confirm yes; \
-            pwd; \
-            cls -l; \
-            cd /; \
-            cls -l; \
-            cd /Competiciones; \
-            cls -l; \
-            cd /Competiciones/EventosProx; \
-            cls -l; \
-            cd /Competiciones/EventosProx/RSCE; \
-            cls -l; \
-            cd /Competiciones/EventosProx/RSCE/data; \
-            cls -l; \
-            bye"
-            
+            set sftp:connect-program 'ssh -a -x -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=2'; \
+            cd ${REMOTE_DIR}; \
+            put ${SRC} -o ${DST}; \
+            bye"                    
+          
       - name: Subir archivos por SFTP SSH 22
         id: sftp_upload
         env:
