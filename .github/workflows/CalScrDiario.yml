@@ -69,6 +69,15 @@ jobs:
           echo "❌ El scraper falló después de 3 intentos"
           exit 1
 
+      - name: Subir debug RSCE si falla scraper
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-rsce-${{ github.run_number }}
+          path: |
+            debug_rsce/**
+          retention-days: 10
+      
       - name: Ejecutar generador de mapa HTML
         run: |
           set -euo pipefail
