@@ -8,7 +8,7 @@ on:
 jobs:
   run_and_upload:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     env:
       TZ: Europe/Madrid
@@ -35,16 +35,43 @@ jobs:
           python -m pip install --upgrade pip
           pip install selenium webdriver-manager beautifulsoup4 geopy python-dotenv folium pandas
 
-      - name: Ejecutar scraper CSV y GeoJSON
+      - name: Ejecutar scraper CSV y GeoJSON con reintentos
         run: |
           set -euo pipefail
-          # Por defecto guarda en la carpeta ./resultados_agility
-          python "./scrape_rsce_csv_geo.py"
+
+          for attempt in 1 2 3; do
+            echo "===================================================="
+            echo "Ejecutando scraper intento ${attempt}/3"
+            echo "===================================================="
+
+            set +e
+            timeout 600 python "./scrape_rsce_csv_geo.py"
+            rc=$?
+            set -e
+
+            if [ "$rc" -eq 0 ]; then
+              echo "✅ Scraper ejecutado correctamente"
+              exit 0
+            fi
+
+            if [ "$rc" -eq 124 ]; then
+              echo "⚠️ El scraper se quedó colgado y fue cancelado por timeout"
+            else
+              echo "⚠️ El scraper falló con código $rc"
+            fi
+
+            if [ "$attempt" -lt 3 ]; then
+              echo "Esperando 60 segundos antes de reintentar..."
+              sleep 60
+            fi
+          done
+
+          echo "❌ El scraper falló después de 3 intentos"
+          exit 1
 
       - name: Ejecutar generador de mapa HTML
         run: |
           set -euo pipefail
-          # Copia el CSV a la raíz temporalmente para que generate_map.py lo encuentre
           cp ./resultados_agility/eventos_agility_2026.csv ./eventos_agility_2026.csv || true
           python "./generate_map.py"
 
@@ -121,7 +148,7 @@ jobs:
             exit 1
           fi
 
-          REMOTE_DATA_DIR="/www/NewWeb/Privado/Competiciones/EventosProx/Flow/data"
+          REMOTE_DATA_DIR="/www/NewWeb/Privado/Competiciones/EventosProx/RSCE/data"
           REMOTE_HTML_DIR="/www/NewWeb/Privado/Competiciones/EventosProx/RSCE"
 
           echo "Subida por SFTP:"
