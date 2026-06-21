@@ -157,14 +157,14 @@ jobs:
             exit 1
           fi
 
+          REMOTE_BASE_DIR="/www/NewWeb/Privado/Competiciones/EventosProx/RSCE"
           REMOTE_DATA_DIR="/www/NewWeb/Privado/Competiciones/EventosProx/RSCE/data"
-          REMOTE_HTML_DIR="/www/NewWeb/Privado/Competiciones/EventosProx/RSCE"
 
           echo "Subida por SFTP:"
           echo "Servidor: ${FTP_SERVER}"
           echo "Puerto: 22"
+          echo "Base dir: ${REMOTE_BASE_DIR}"
           echo "Data dir: ${REMOTE_DATA_DIR}"
-          echo "HTML dir: ${REMOTE_HTML_DIR}"
 
           upload_one () {
             local SRC="$1"
@@ -194,6 +194,8 @@ jobs:
                 set net:reconnect-interval-base 10; \
                 set sftp:auto-confirm yes; \
                 set sftp:connect-program 'ssh -a -x -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=2'; \
+                mkdir -p ${REMOTE_BASE_DIR}; \
+                mkdir -p ${REMOTE_DATA_DIR}; \
                 cd ${REMOTE_DIR}; \
                 put ${SRC} -o ${DST}; \
                 bye"
@@ -223,8 +225,8 @@ jobs:
 
           upload_one "$CSV_PATH" "$REMOTE_DATA_DIR" "eventos_agility_2026.csv"
           upload_one "$GEO_PATH" "$REMOTE_DATA_DIR" "eventos_agility_2026.geojson"
-          upload_one "$MAP_PATH" "$REMOTE_HTML_DIR" "mapa_agility_2026.html"
-
+          upload_one "$MAP_PATH" "$REMOTE_BASE_DIR" "mapa_agility_2026.html"
+      
       - name: Verificar archivos remotos por SFTP
         if: steps.sftp_upload.outcome == 'success'
         env:
