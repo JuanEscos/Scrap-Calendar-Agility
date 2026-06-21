@@ -95,6 +95,34 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y lftp
 
+      - name: Diagnóstico rutas SFTP
+        env:
+          FTP_SERVER:   ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+          sudo apt-get install -y lftp
+
+          lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "sftp://${FTP_SERVER}:22" -e "\
+            set cmd:fail-exit no; \
+            set sftp:auto-confirm yes; \
+            pwd; \
+            cls -l; \
+            cd /; \
+            cls -l; \
+            cd /Competiciones; \
+            cls -l; \
+            cd /Competiciones/EventosProx; \
+            cls -l; \
+            cd /Competiciones/EventosProx/RSCE; \
+            cls -l; \
+            cd /Competiciones/EventosProx/RSCE/data; \
+            cls -l; \
+            bye"
+            
       - name: Subir archivos por SFTP SSH 22
         id: sftp_upload
         env:
@@ -120,8 +148,8 @@ jobs:
             exit 1
           fi
 
-          REMOTE_DATA_DIR="/www/NewWeb/Privado/Competiciones/EventosProx/RSCE/data"
-          REMOTE_HTML_DIR="/www/NewWeb/Privado/Competiciones/EventosProx/RSCE"
+          REMOTE_DATA_DIR="/Competiciones/EventosProx/RSCE/data"
+          REMOTE_HTML_DIR="/Competiciones/EventosProx/RSCE"
 
           echo "Subida por SFTP:"
           echo "Servidor: ${FTP_SERVER}"
