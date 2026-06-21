@@ -8,6 +8,7 @@ on:
 jobs:
   run_and_upload:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     env:
       TZ: Europe/Madrid
@@ -95,28 +96,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y lftp
 
-      - name: Diagnóstico rutas SFTP
-        env:
-          FTP_SERVER:   ${{ secrets.FTP_SERVER }}
-          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
-          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
-        run: |
-          set -euo pipefail
-
-          sudo apt-get update
-          sudo apt-get install -y lftp
-
-          timeout 180 lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "sftp://${FTP_SERVER}:22" -e "\
-            set cmd:fail-exit yes; \
-            set net:timeout 30; \
-            set net:max-retries 1; \
-            set net:reconnect-interval-base 10; \
-            set sftp:auto-confirm yes; \
-            set sftp:connect-program 'ssh -a -x -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=2'; \
-            cd ${REMOTE_DIR}; \
-            put ${SRC} -o ${DST}; \
-            bye"                    
-          
       - name: Subir archivos por SFTP SSH 22
         id: sftp_upload
         env:
@@ -172,12 +151,13 @@ jobs:
               echo "Intento SFTP ${attempt}/5 para ${DST}"
 
               set +e
-              lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "sftp://${FTP_SERVER}:22" -e "\
+              timeout 180 lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "sftp://${FTP_SERVER}:22" -e "\
                 set cmd:fail-exit yes; \
-                set net:timeout 60; \
-                set net:max-retries 3; \
-                set net:reconnect-interval-base 20; \
+                set net:timeout 30; \
+                set net:max-retries 1; \
+                set net:reconnect-interval-base 10; \
                 set sftp:auto-confirm yes; \
+                set sftp:connect-program 'ssh -a -x -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=2'; \
                 cd ${REMOTE_DIR}; \
                 put ${SRC} -o ${DST}; \
                 bye"
@@ -189,11 +169,15 @@ jobs:
                 return 0
               fi
 
-              echo "⚠️ Falló SFTP para ${DST} con rc=${rc}"
+              if [ "$rc" -eq 124 ]; then
+                echo "⚠️ Timeout: el intento SFTP se quedó colgado y fue cancelado automáticamente"
+              else
+                echo "⚠️ Falló SFTP para ${DST} con rc=${rc}"
+              fi
 
               if [ "$attempt" -lt 5 ]; then
-                echo "Esperando 60 segundos antes de reintentar..."
-                sleep 60
+                echo "Esperando 30 segundos antes de reintentar..."
+                sleep 30
               fi
             done
 
@@ -214,28 +198,30 @@ jobs:
         run: |
           set -euo pipefail
 
-          REMOTE_DATA_DIR="/www/NewWeb/Privado/Competiciones/EventosProx/RSCE/data"
-          REMOTE_HTML_DIR="/www/NewWeb/Privado/Competiciones/EventosProx/RSCE"
+          REMOTE_DATA_DIR="/Competiciones/EventosProx/RSCE/data"
+          REMOTE_HTML_DIR="/Competiciones/EventosProx/RSCE"
 
           echo "Verificando carpeta data..."
-          lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "sftp://${FTP_SERVER}:22" -e "\
+
+          timeout 120 lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "sftp://${FTP_SERVER}:22" -e "\
             set cmd:fail-exit yes; \
-            set net:timeout 60; \
-            set net:max-retries 3; \
-            set net:reconnect-interval-base 20; \
+            set net:timeout 30; \
+            set net:max-retries 1; \
             set sftp:auto-confirm yes; \
+            set sftp:connect-program 'ssh -a -x -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=2'; \
             cd ${REMOTE_DATA_DIR}; \
             cls -l eventos_agility_2026.csv; \
             cls -l eventos_agility_2026.geojson; \
             bye"
 
           echo "Verificando carpeta HTML..."
-          lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "sftp://${FTP_SERVER}:22" -e "\
+
+          timeout 120 lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "sftp://${FTP_SERVER}:22" -e "\
             set cmd:fail-exit yes; \
-            set net:timeout 60; \
-            set net:max-retries 3; \
-            set net:reconnect-interval-base 20; \
+            set net:timeout 30; \
+            set net:max-retries 1; \
             set sftp:auto-confirm yes; \
+            set sftp:connect-program 'ssh -a -x -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=2'; \
             cd ${REMOTE_HTML_DIR}; \
             cls -l mapa_agility_2026.html; \
             bye"
