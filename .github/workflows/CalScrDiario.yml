@@ -157,8 +157,8 @@ jobs:
             exit 1
           fi
 
-          REMOTE_BASE_DIR="Competiciones/EventosProx/RSCE"
-          REMOTE_DATA_DIR="Competiciones/EventosProx/RSCE/data"
+          REMOTE_BASE_DIR="www/NewWeb/Privado/Competiciones/EventosProx/RSCE"
+          REMOTE_DATA_DIR="www/NewWeb/Privado/Competiciones/EventosProx/RSCE/data"
 
           echo "Subida por SFTP:"
           echo "Servidor: ${FTP_SERVER}"
@@ -236,8 +236,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          REMOTE_BASE_DIR="Competiciones/EventosProx/RSCE"
-          REMOTE_DATA_DIR="Competiciones/EventosProx/RSCE/data"
+          REMOTE_BASE_DIR="www/NewWeb/Privado/Competiciones/EventosProx/RSCE"
+          REMOTE_DATA_DIR="www/NewWeb/Privado/Competiciones/EventosProx/RSCE/data"
 
           echo "Verificando carpeta data..."
 
