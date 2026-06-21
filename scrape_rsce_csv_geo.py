@@ -615,6 +615,118 @@ class RSCEAgilityExporter:
 
         print(f"🧭 GeoJSON guardado en: {self.OUTGEO} ({len(feats)} features)")
 
+    def _descargar_html_directo(self) -> str:
+        """
+        Descarga directa del HTML sin Selenium.
+        La página de RSCE está devolviendo los eventos en el HTML,
+        así que esto evita los timeouts del navegador headless.
+        """
+        import requests
+
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+            "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
+        }
+
+        print("[DEBUG] Descargando HTML directo con requests...")
+        r = requests.get(self.URL_BASE, headers=headers, timeout=60)
+        r.raise_for_status()
+
+        html = r.text
+
+        self.DEBUG_DIR.mkdir(exist_ok=True)
+        (self.DEBUG_DIR / "rsce_requests.html").write_text(html, encoding="utf-8")
+
+        print(f"[DEBUG] HTML directo descargado: {len(html)} caracteres")
+        return html
+
+    def _extraer_eventos_html_directo(self, html: str):
+        """
+        Extractor específico para el HTML actual de RSCE.
+        Busca bloques por títulos h2 que enlazan a eventos y extrae:
+        nombre, inicio, fin, url, ciudad, estado.
+        """
+        soup = BeautifulSoup(html, "html.parser")
+        eventos = []
+
+        enlaces = soup.select("h2 a")
+
+        print(f"[DEBUG] h2 a encontrados: {len(enlaces)}")
+
+        for a in enlaces:
+            nombre = self._texto_limpio(a.get_text(" ", strip=True))
+            url = a.get("href", "").strip()
+
+            if not nombre:
+                continue
+
+            txt_nombre = nombre.lower()
+
+            if "agility" not in txt_nombre:
+                continue
+
+            # Buscamos el bloque padre más cercano con texto suficiente.
+            bloque = a
+            for _ in range(8):
+                if bloque.parent:
+                    bloque = bloque.parent
+                    texto = self._texto_limpio(bloque.get_text(" ", strip=True))
+                    if "leer más" in texto.lower() and len(texto) > len(nombre) + 20:
+                        break
+
+            texto = self._texto_limpio(bloque.get_text(" ", strip=True))
+
+            estado = "Anulado" if "anulado" in texto.lower() else "Activo"
+
+            fechas = DATE_RE.findall(texto.lower().replace(" de ", " "))
+            fechas_txt = []
+
+            for d, mes, y in fechas:
+                fechas_txt.append(f"{int(d)} {mes}, {y}")
+
+            inicio = fechas_txt[0] if len(fechas_txt) >= 1 else ""
+            fin = fechas_txt[1] if len(fechas_txt) >= 2 else inicio
+
+            ciudad = ""
+
+            # En la web suele aparecer como un h3 después de las fechas.
+            h3 = bloque.find("h3")
+            if h3:
+                ciudad = self._texto_limpio(h3.get_text(" ", strip=True))
+
+            # Fallback: intenta sacar ciudad después de las fechas.
+            if not ciudad and fechas_txt:
+                partes = texto.split(fechas_txt[-1])
+                if len(partes) > 1:
+                    resto = partes[1]
+                    resto = resto.replace("Leer más", "")
+                    resto = self._texto_limpio(resto)
+                    ciudad = resto[:120]
+
+            eventos.append((nombre, inicio, fin, url, ciudad, estado))
+
+        # Deduplicado
+        dedup = []
+        seen = set()
+
+        for ev in eventos:
+            nombre, inicio, fin, url, ciudad, estado = ev
+            key = url or f"{nombre}|{inicio}|{ciudad}"
+
+            if key in seen:
+                continue
+
+            seen.add(key)
+            dedup.append(ev)
+
+        print("      Ejemplos directo:", [f"{e[5]} · {e[0][:48]}" for e in dedup[:3]])
+        return dedup
+
+    
     # ---------- Run ----------
     def run(self):
         print(f"[DEBUG] URL_BASE: {self.URL_BASE}")
@@ -625,69 +737,85 @@ class RSCEAgilityExporter:
             f"GEOCODIFICAR={self.GEOCODIFICAR}"
         )
 
-        d = None
+        eventos_totales = []
 
+        # =====================================================
+        # 1) Intento principal: descarga directa sin Selenium
+        # =====================================================
         try:
-            d = self._init_driver()
-            d.get(self.URL_BASE)
+            html = self._descargar_html_directo()
+            eventos_totales = self._extraer_eventos_html_directo(html)
+            print(f"🔍 Total brutos por HTML directo: {len(eventos_totales)}")
 
-            time.sleep(3)
-            self._aceptar_cookies_si_aparece(d)
-
-            self._esperar_listado(d)
-
-            if self.APLICAR_FILTRO_UI:
-                self._aplicar_filtro_desde_hoy_ui(d)
-
-            total_pages = self._detectar_total_paginas(d)
-            pages = [1] if self.SOLO_PRIMERA else list(range(1, total_pages + 1))
-
+        except Exception as e:
+            print(f"⚠️ Falló extracción directa con requests: {e}")
             eventos_totales = []
-            seen_urls = set()
 
-            for p in pages:
-                ok = self._ir_a_pagina(d, p)
+        # =====================================================
+        # 2) Fallback: Selenium, solo si la extracción directa falla
+        # =====================================================
+        if len(eventos_totales) == 0:
+            print("⚠️ Sin eventos por HTML directo. Probando Selenium...")
 
-                if not ok:
-                    break
+            d = None
 
-                self._scroll_hasta_el_final(d)
+            try:
+                d = self._init_driver()
+                d.get(self.URL_BASE)
 
-                eventos = self._extraer_eventos(d.page_source)
+                time.sleep(3)
+                self._aceptar_cookies_si_aparece(d)
 
-                nuevos = 0
+                self._esperar_listado(d)
 
-                for ev in eventos:
-                    url = ev[3]
-                    key = url or f"{ev[0]}|{ev[1]}|{ev[4]}"
+                if self.APLICAR_FILTRO_UI:
+                    self._aplicar_filtro_desde_hoy_ui(d)
 
-                    if key and key not in seen_urls:
-                        eventos_totales.append(ev)
-                        seen_urls.add(key)
-                        nuevos += 1
+                total_pages = self._detectar_total_paginas(d)
+                pages = [1] if self.SOLO_PRIMERA else list(range(1, total_pages + 1))
 
-                print(f"    ➕ {nuevos} nuevos en página {p}")
+                seen_urls = set()
 
-            print(f"🔍 Total brutos: {len(eventos_totales)}")
+                for p in pages:
+                    ok = self._ir_a_pagina(d, p)
 
-            # Si no se ha extraído nada, guardamos debug antes de fallar.
-            if len(eventos_totales) == 0:
-                print("❌ No se ha extraído ningún evento. Guardando debug...")
-                self._guardar_debug(d, "rsce_sin_eventos")
-                raise RuntimeError("No se ha extraído ningún evento de RSCE")
+                    if not ok:
+                        break
 
-            eventos_final = self._filtrar_eventos(eventos_totales)
-            print(f"🔍 Tras filtros (estado/fecha): {len(eventos_final)}")
+                    self._scroll_hasta_el_final(d)
 
-            self._guardar_csv(eventos_final)
-            self._guardar_geojson(eventos_final)
+                    eventos = self._extraer_eventos(d.page_source)
 
-        finally:
-            if d is not None:
-                try:
-                    d.quit()
-                except Exception:
-                    pass
+                    nuevos = 0
+
+                    for ev in eventos:
+                        url = ev[3]
+                        key = url or f"{ev[0]}|{ev[1]}|{ev[4]}"
+
+                        if key and key not in seen_urls:
+                            eventos_totales.append(ev)
+                            seen_urls.add(key)
+                            nuevos += 1
+
+                    print(f"    ➕ {nuevos} nuevos en página {p}")
+
+            finally:
+                if d is not None:
+                    try:
+                        d.quit()
+                    except Exception:
+                        pass
+
+        print(f"🔍 Total brutos final: {len(eventos_totales)}")
+
+        if len(eventos_totales) == 0:
+            raise RuntimeError("No se ha extraído ningún evento de RSCE")
+
+        eventos_final = self._filtrar_eventos(eventos_totales)
+        print(f"🔍 Tras filtros estado/fecha: {len(eventos_final)}")
+
+        self._guardar_csv(eventos_final)
+        self._guardar_geojson(eventos_final)
 
 
 if __name__ == "__main__":
