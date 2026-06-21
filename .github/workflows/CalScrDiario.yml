@@ -77,7 +77,7 @@ jobs:
           path: |
             debug_rsce/**
           retention-days: 10
-      
+
       - name: Ejecutar generador de mapa HTML
         run: |
           set -euo pipefail
@@ -157,8 +157,8 @@ jobs:
             exit 1
           fi
 
-          REMOTE_BASE_DIR="/www/NewWeb/Privado/Competiciones/EventosProx/RSCE"
-          REMOTE_DATA_DIR="/www/NewWeb/Privado/Competiciones/EventosProx/RSCE/data"
+          REMOTE_BASE_DIR="Competiciones/EventosProx/RSCE"
+          REMOTE_DATA_DIR="Competiciones/EventosProx/RSCE/data"
 
           echo "Subida por SFTP:"
           echo "Servidor: ${FTP_SERVER}"
@@ -194,9 +194,9 @@ jobs:
                 set net:reconnect-interval-base 10; \
                 set sftp:auto-confirm yes; \
                 set sftp:connect-program 'ssh -a -x -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=2'; \
-                mkdir -p ${REMOTE_BASE_DIR}; \
-                mkdir -p ${REMOTE_DATA_DIR}; \
+                pwd; \
                 cd ${REMOTE_DIR}; \
+                pwd; \
                 put ${SRC} -o ${DST}; \
                 bye"
               rc=$?
@@ -226,7 +226,7 @@ jobs:
           upload_one "$CSV_PATH" "$REMOTE_DATA_DIR" "eventos_agility_2026.csv"
           upload_one "$GEO_PATH" "$REMOTE_DATA_DIR" "eventos_agility_2026.geojson"
           upload_one "$MAP_PATH" "$REMOTE_BASE_DIR" "mapa_agility_2026.html"
-      
+
       - name: Verificar archivos remotos por SFTP
         if: steps.sftp_upload.outcome == 'success'
         env:
@@ -236,8 +236,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          REMOTE_DATA_DIR="/www/NewWeb/Privado/Competiciones/EventosProx/RSCE/data"
-          REMOTE_HTML_DIR="/www/NewWeb/Privado/Competiciones/EventosProx/RSCE"
+          REMOTE_BASE_DIR="Competiciones/EventosProx/RSCE"
+          REMOTE_DATA_DIR="Competiciones/EventosProx/RSCE/data"
 
           echo "Verificando carpeta data..."
 
@@ -247,7 +247,9 @@ jobs:
             set net:max-retries 1; \
             set sftp:auto-confirm yes; \
             set sftp:connect-program 'ssh -a -x -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=2'; \
+            pwd; \
             cd ${REMOTE_DATA_DIR}; \
+            pwd; \
             cls -l eventos_agility_2026.csv; \
             cls -l eventos_agility_2026.geojson; \
             bye"
@@ -260,7 +262,9 @@ jobs:
             set net:max-retries 1; \
             set sftp:auto-confirm yes; \
             set sftp:connect-program 'ssh -a -x -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=2'; \
-            cd ${REMOTE_HTML_DIR}; \
+            pwd; \
+            cd ${REMOTE_BASE_DIR}; \
+            pwd; \
             cls -l mapa_agility_2026.html; \
             bye"
 
